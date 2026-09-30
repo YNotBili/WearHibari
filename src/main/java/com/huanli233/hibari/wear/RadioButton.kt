@@ -801,22 +801,34 @@ private fun Modifier.radioContentDescription(description: String?): Modifier =
  * API 29 and the module floors at 25, so older watches just get the click.
  */
 private fun Modifier.radioSelectionClickable(enabled: Boolean, onClick: () -> Unit): Modifier =
-    this.thenViewAttribute<View, Boolean>(uniqueKey, enabled) {
+    this.thenViewAttribute<View, RadioClickCommand>(
+        uniqueKey,
+        RadioClickCommand(enabled, onClick),
+    ) { command ->
         val view = this
-        setOnClickListener(if (enabled) {
+        setOnClickListener(if (command.enabled) {
             View.OnClickListener {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                 }
-                onClick()
+                command.onClick()
             }
         } else {
             null
         })
-        isClickable = enabled
-        isLongClickable = enabled
-        this.isEnabled = enabled
+        isClickable = command.enabled
+        isLongClickable = command.enabled
+        this.isEnabled = command.enabled
     }
+
+/**
+ * `enabled` plus the handler itself, for the same reason [com.huanli233.hibari.wear.attributes.clickable]
+ * carries its lambda in the compared value: `ViewAttribute.equals` compares `key` and `value` only, so
+ * keying this on `enabled` alone would leave a click that closes over a composition value firing the
+ * closure from the tune that first installed it. `setOnClickListener` replaces rather than adds, so
+ * re-applying per tune cannot stack handlers.
+ */
+private data class RadioClickCommand(val enabled: Boolean, val onClick: () -> Unit)
 
 /** The gap upstream leaves between the two tappable sections of a `SplitRadioButton`. */
 private val SplitSectionGap: Dp = 2.dp

@@ -10,7 +10,6 @@ import com.huanli233.hibari.runtime.Tunable
 import com.huanli233.hibari.runtime.currentContext
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.graphics.Color
-import com.huanli233.hibari.ui.graphics.setLuminance
 import com.huanli233.hibari.ui.graphics.takeOrElse
 import com.huanli233.hibari.ui.thenViewAttribute
 import com.huanli233.hibari.ui.unit.Dp
@@ -387,9 +386,15 @@ object ScrollIndicatorDefaults {
     }
 }
 
-/** Upstream's `defaultScrollIndicatorColors`; the luminance shifts are the ones in that file. */
+/**
+ * Upstream's `defaultScrollIndicatorColors` (`material3/ScrollIndicator.kt:367-369`); the luminance
+ * shifts are the ones in that file. [setLuminanceTone] rather than hibari-ui's public
+ * `setLuminance`: upstream's is a 0..100 Oklab/Cam tone, and hibari-ui's takes a 0..1 relative
+ * luminance it `coerceIn`s, which would clamp both 80f and 20f to 1f and draw the track and the
+ * indicator the same white.
+ */
 internal val ColorScheme.defaultScrollIndicatorColors: ScrollIndicatorColors
     @Tunable get() = ScrollIndicatorColors(
-        indicatorColor = ColorSchemeKeyTokens.OnBackground.resolve(this).setLuminance(80f),
-        trackColor = ColorSchemeKeyTokens.OnBackground.resolve(this).setLuminance(20f),
+        indicatorColor = ColorSchemeKeyTokens.OnBackground.resolve(this).setLuminanceTone(80f),
+        trackColor = ColorSchemeKeyTokens.OnBackground.resolve(this).setLuminanceTone(20f),
     )

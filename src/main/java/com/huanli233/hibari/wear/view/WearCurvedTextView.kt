@@ -37,10 +37,21 @@ enum class CurvedAnchor(val ratio: Float) {
  * outlines are warped, which a renderer that cannot warp glyphs has to read as "which line is placed
  * on the arc" instead; see the note on [WearCurvedTextView].
  *
- * [HalfAscent], [HalfOpticalHeight], [Ascent] and [Descent] carry upstream's offsets from
- * `CurvedTextStyle.WarpOffset.determineWarpRadiusOffset` (`CurvedTextStyle.kt:555-569`) verbatim,
- * `None` collapses upstream's `None` and `Baseline` (both 0). Upstream's `Unspecified` is not here:
- * a Hibari caller always names a value, so no merge is needed.
+ * The offsets themselves are [determineRadiusOffset], the module's single copy of upstream's
+ * `CurvedTextStyle.WarpOffset.determineWarpRadiusOffset` (`CurvedTextStyle.kt:555-569`).
+ *
+ * Upstream's `WarpOffset` is a value class whose companion (`CurvedTextStyle.kt:529-553`) carries
+ * seven offsets, `Unspecified` among them (`:531`, with `isSpecified`/`takeOrElse` at `:512-527`).
+ * The six that mean something to a renderer are here as five names, upstream's `None` and `Baseline`
+ * collapsed into [None]: upstream's own arithmetic gives `Baseline` 0 (`:557`) and never lets `None`
+ * reach that function at all (`BasicCurvedText.kt` gates warping on it, `CurvedTextStyle.kt:567`
+ * throws otherwise), so both answer 0 here.
+ *
+ * There is deliberately no `Unspecified` member: a `when` over this enum is an expression in
+ * [determineRadiusOffset] below and again in `CurvedContainer.kt:798-804`, so adding a sixth name
+ * would break the second one, which is not this file's to edit. A caller that needs upstream's "fill
+ * this in from another style" state — [com.huanli233.hibari.wear.CurvedTextStyle] does — spells it as
+ * a nullable `WarpOffset?` instead.
  */
 enum class WarpOffset {
     /** No radial adjustment: the baseline rides on the arc. */
@@ -60,6 +71,31 @@ enum class WarpOffset {
 
     /** `-descent`, i.e. below the baseline, as upstream. */
     Descent,
+}
+
+/**
+ * The one implementation in this module of upstream's
+ * `CurvedTextStyle.WarpOffset.determineWarpRadiusOffset(ascent, descent)`
+ * (`foundation/CurvedTextStyle.kt:555-569`), which answers "how far does the line that keeps its
+ * width sit from the baseline, given this warp choice". [ascent] and [descent] are upstream's two
+ * arguments, and a caller supplies them from whichever paint it measured with —
+ * `TextPaint.ascent()`/`descent()` in both [WearCurvedTextView] and the budgeting side of
+ * `CurvedContainer`.
+ *
+ * Upstream's table is `Baseline -> 0f`, `HalfAscent -> -ascent / 2`,
+ * `HalfOpticalHeight -> -(ascent + descent) / 2`, `Ascent -> -ascent`, `Descent -> -descent`,
+ * `else -> throw IllegalArgumentException` (`:556-568`). [None] stands for the two zero-yielding
+ * names upstream's renderer can reach — `Baseline` directly, `None` through the gate that skips
+ * warping — so it answers 0 rather than throwing, which is what upstream's own pipeline ends up
+ * using. There is no arm for upstream's `Unspecified` because this enum has no such member; see the
+ * note on [WarpOffset].
+ */
+fun WarpOffset.determineRadiusOffset(ascent: Float, descent: Float): Float = when (this) {
+    WarpOffset.None -> 0f
+    WarpOffset.HalfAscent -> -ascent / 2f
+    WarpOffset.HalfOpticalHeight -> -(ascent + descent) / 2f
+    WarpOffset.Ascent -> -ascent
+    WarpOffset.Descent -> -descent
 }
 
 /**
@@ -346,23 +382,18 @@ open class WearCurvedTextView @JvmOverloads constructor(
         if (style.lineHeight.isSp) style.lineHeight.value * density else -1f
 
     /**
-     * Upstream's `CurvedTextStyle.WarpOffset.determineWarpRadiusOffset` (`CurvedTextStyle.kt:555-569`).
+     * The radial shift this view applies for its [warpOffset].
      *
-     * Zero below API 29: upstream wraps the whole warping block in `SDK_INT >= Q` and leaves the
-     * effective offset at `WarpOffset.None` underneath it (`foundation/BasicCurvedText.kt:299-303`).
-     * The budget side in `CurvedTextChild.initializeMeasure` carries the same gate — the two must
-     * agree or the arc a card budgets stops matching the arc drawn.
+     * The arithmetic is [WarpOffset.determineRadiusOffset], the module's only copy of it; what is
+     * left here is only the platform gate. Zero below API 29: upstream wraps the whole warping block
+     * in `SDK_INT >= Q` and leaves the effective offset at `WarpOffset.None` underneath it
+     * (`foundation/BasicCurvedText.kt:299-303`). The budget side in `CurvedTextChild.initializeMeasure`
+     * carries the same gate — the two must agree or the arc a card budgets stops matching the arc
+     * drawn.
      */
     private fun warpRadiusOffset(): Float =
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) 0f
-        else
-            when (warpOffset) {
-                WarpOffset.None -> 0f
-                WarpOffset.HalfAscent -> -textPaint.ascent() / 2f
-                WarpOffset.HalfOpticalHeight -> -(textPaint.ascent() + textPaint.descent()) / 2f
-                WarpOffset.Ascent -> -textPaint.ascent()
-                WarpOffset.Descent -> -textPaint.descent()
-            }
+        else warpOffset.determineRadiusOffset(textPaint.ascent(), textPaint.descent())
 
     /**
      * Truncate to the arc budget: `maxSweepDegrees * measureRadius` is the usable arc length in px.

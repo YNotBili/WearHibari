@@ -11,9 +11,9 @@ import com.huanli233.hibari.wear.tokens.TypographyTokens
 /**
  * Ported from androidx.wear.compose.material3.{MaterialTheme,Providers}.
  *
- * `LocalIndication`, `LocalTextSelectionColors`, the swipe-to-dismiss scrim locals and
- * `LocalMotionScheme` are not ported: ripples arrive with [ContainerDrawable]'s own state handling
- * and motion specs depend on the animation core port, which is still outstanding.
+ * `LocalIndication`, `LocalTextSelectionColors` and the swipe-to-dismiss scrim locals are not
+ * ported: ripples arrive with [ContainerDrawable]'s own state handling. `LocalMotionScheme` is
+ * ported and lives in [MotionScheme.kt][com.huanli233.hibari.wear.MotionScheme], provided here.
  */
 
 internal val LocalColorScheme = staticTunationLocalOf { ColorScheme() }
@@ -46,6 +46,10 @@ object MaterialTheme {
 
     val shapes: Shapes
         @Tunable get() = LocalShapes.current
+
+    /** Upstream declares this as an object member too (material3/MaterialTheme.kt:88-89). */
+    val motionScheme: MotionScheme
+        @Tunable get() = LocalMotionScheme.current
 }
 
 /**
@@ -60,15 +64,18 @@ fun MaterialTheme(
     colorScheme: ColorScheme? = null,
     typography: Typography? = null,
     shapes: Shapes? = null,
+    motionScheme: MotionScheme? = null,
     content: @Tunable () -> Unit,
 ) {
     val resolvedColors = colorScheme ?: MaterialTheme.colorScheme
     val resolvedTypography = typography ?: MaterialTheme.typography
     val resolvedShapes = shapes ?: MaterialTheme.shapes
+    val resolvedMotionScheme = motionScheme ?: MaterialTheme.motionScheme
     TunationLocalProvider(
         LocalColorScheme provides resolvedColors,
         LocalTypography provides resolvedTypography,
         LocalShapes provides resolvedShapes,
+        LocalMotionScheme provides resolvedMotionScheme,
         // Upstream's slot ends in `ProvideTextStyle(value = typography.bodyLarge, content)`
         // (material3/MaterialTheme.kt:74); without this the theme's own body role never reaches a
         // [Text] that was handed no explicit style.

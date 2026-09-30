@@ -17,6 +17,12 @@ import com.huanli233.hibari.ui.uniqueKey
  * [com.huanli233.hibari.wear.Slider]. The churn is cheap because every write here is a *set*, not an
  * add — `setOnClickListener` replaces the handler, so a re-apply cannot stack listeners the way an
  * `addOnClickListener` would.
+ *
+ * `isFocusable` belongs to this contract because upstream's `Modifier.clickable` installs
+ * `focusable()` itself: a clickable thing is a d-pad and rotary target by definition. Without it
+ * every ported button in this module was reachable by touch only, which is precisely the difference
+ * a dial with a crown shows. Touch-mode focusability stays untouched, so focus is entered from a key
+ * rather than stolen by a tap.
  */
 fun Modifier.clickable(enabled: Boolean, onClick: () -> Unit): Modifier =
     this.thenViewAttribute<View, ClickCommand>(uniqueKey, ClickCommand(enabled, onClick)) { command ->
@@ -28,6 +34,7 @@ fun Modifier.clickable(enabled: Boolean, onClick: () -> Unit): Modifier =
         setOnClickListener(handler)
         isClickable = command.enabled
         isLongClickable = command.enabled
+        isFocusable = command.enabled
         isEnabled = command.enabled
     }
 

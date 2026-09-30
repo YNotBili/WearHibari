@@ -172,6 +172,13 @@ object CardDefaults {
      */
     val Height: Dp = CardTokens.ContainerMinHeight
 
+    /**
+     * `CardDefaults.AppImageSize` (material3/Card.kt:1078): the default size of the app icon or
+     * image an [AppCard] shows. It is `CardTokens.AppImageSize`, and [CardTokens] is internal, so
+     * this is the only way a caller outside the module can name 18.dp.
+     */
+    val AppImageSize: Dp = CardTokens.AppImageSize
+
     val CardHorizontalPadding: Dp = 12.dp
     val CardVerticalPadding: Dp = 12.dp
 

@@ -10,6 +10,7 @@ import com.huanli233.hibari.ui.unit.Dp
 import com.huanli233.hibari.ui.unit.dp
 import com.huanli233.hibari.ui.uniqueKey
 import com.huanli233.hibari.ui.viewClass
+import com.huanli233.hibari.wear.attributes.clickable
 import com.huanli233.hibari.wear.view.EdgeButtonGeometry
 import com.huanli233.hibari.wear.view.WearEdgeButtonView
 
@@ -62,7 +63,11 @@ fun EdgeButton(
                     contentPaddingTop = EdgeButtonContentPaddingTop,
                     contentPaddingBottom = EdgeButtonContentPaddingBottom,
                 ),
-            ),
+            )
+            // Upstream's chain ends in `clickable(...)` (`material3/EdgeButton.kt:183-189`); without
+            // it this node is neither clickable nor focusable-by-press, so a tap - and a D-pad centre
+            // press on the focused button - would do nothing at all.
+            .clickable(enabled, onClick),
     ) {
         provideContentColorAndStyle(contentColor, MaterialTheme.typography.labelMedium) {
             Row { scope() }

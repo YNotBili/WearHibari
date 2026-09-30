@@ -51,7 +51,9 @@ import kotlinx.coroutines.launch
  * SuccessConfirmationDialog, FailureConfirmationDialog} and their `*Content` siblings.
  *
  * Window presentation is not hibari-wear's job: no `Dialog`/`DialogFragment` hosting, no scrim, no
- * back handling, no swipe-to-dismiss, no focus, and `KeepScreenOn()` (a window flag) goes with them.
+ * back handling, no swipe-to-dismiss, no focus. `KeepScreenOn()` is the exception — upstream gates it
+ * on `visible`, and here [confirmationDialogContentWrapper] calls it for as long as the surface is
+ * placed.
  * Upstream's `visible` parameter goes too — the caller places this surface itself, exactly like
  * [Card], and stops composing it to hide it. `durationMillis` is still honoured: the timer that
  * calls `onDismissRequest` once the message has been up belongs to the content, not the window.
@@ -65,9 +67,11 @@ import kotlinx.coroutines.launch
  *    `ConnectionFailureIcon`, `GenericFailureIcon` and the deprecated `FailureIcon` alias: they load
  *    `R.drawable.wear_m3c_*` from the AndroidX resource package, this module ships no resources, and
  *    no drawable id may be invented. Their `content` slots therefore have no default.
- *  - `LocalReduceMotion`: upstream zeroes the entry delays when the wearer has reduced motion on,
- *    and `OpenOnPhoneDialog` additionally freezes its progress and jumps to the end state. There is
- *    no reduce-motion local in hibari-wear yet, so the animations always run.
+ *  - `LocalReduceMotion` is sampled through [wearReduceMotionEnabled], which reads `Settings.Global`
+ *    live rather than caching it and refreshing from a `ContentObserver` the way upstream's local does
+ *    (`foundation/CompositionLocals.kt:44-52`, `:103`). Each use below mirrors upstream's own shape:
+ *    one sample in the tunable body, handed to [wearAnimatedDelay] so the entry delay is skipped
+ *    outright under reduced motion. See `ReduceMotion.kt` for the whole picture.
  *  - `CurvedScope.confirmationDialogCurvedText` is here as the top-level
  *    [CurvedLayoutScope.confirmationDialogCurvedText]: this module spells upstream's `CurvedScope`
  *    [CurvedLayoutScope], and upstream's `CurvedTextStyle` is a plain [TextStyle], which is what
@@ -91,21 +95,9 @@ import kotlinx.coroutines.launch
  * Content the caller puts in the icon slot overflows the plate here exactly as it does upstream.
  */
 
-/* `MotionScheme.standard()` / `.expressive()` are not ported, so the specs they hand out are inlined
- * with their literal springs: dampingRatio 1f for standard spatial and every effects spec
- * (`Spring.DampingRatioNoBouncy`), stiffness 1400f fast / 500f default / 260f slow. */
-
-/** `MaterialTheme.motionScheme.fastEffectsSpec()`. */
-internal val DialogFastEffectsSpec: AnimationSpec<Float> = spring(dampingRatio = 1f, stiffness = 1400f)
-
-/** `MaterialTheme.motionScheme.defaultEffectsSpec()`. */
-internal val DialogDefaultEffectsSpec: AnimationSpec<Float> = spring(dampingRatio = 1f, stiffness = 500f)
-
-/** `MaterialTheme.motionScheme.slowEffectsSpec()`. */
-internal val DialogSlowEffectsSpec: AnimationSpec<Float> = spring(dampingRatio = 1f, stiffness = 260f)
-
-/** `MaterialTheme.motionScheme.defaultSpatialSpec()`. */
-internal val DialogDefaultSpatialSpec: AnimationSpec<Float> = spring(dampingRatio = 1f, stiffness = 500f)
+/* Upstream reaches its springs through `MaterialTheme.motionScheme`, and so does this file: the specs
+ * are read inside the tunable body that uses them and handed to the coroutine, never hoisted to a
+ * module-level val — a `staticTunationLocal` read is only available while a tune is running. */
 
 /**
  * `ConfirmationDialogColors`: the three colour roles a confirmation dialog paints.
@@ -217,7 +209,7 @@ fun ConfirmationDialogContent(
             confirmationDialogIconContainer(
                 size = dialogScreenWidthFraction(currentContext, ConfirmationSizeFraction),
                 targetShape = MaterialTheme.shapes.extraLarge,
-                morphSpec = DialogDefaultSpatialSpec,
+                morphSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
                 rotateFrom = ConfirmationIconInitialAngle,
                 iconColor = resolved.iconColor,
                 containerColor = resolved.iconContainerColor,
@@ -240,9 +232,17 @@ fun ConfirmationDialogContent(
     val iconSlot = content
     val textSlot = text
     val opacity = remember { Animatable(0f) }
+    // Upstream samples `LocalReduceMotion` once per composable and passes it into `animatedDelay`
+    // (`material3/ConfirmationDialog.kt:273` then `:278`), so the setting is read in the tunable body
+    // rather than inside the coroutine.
+    val reduceMotion = wearReduceMotionEnabled(context)
+    // Upstream's `TextOpacityAnimationSpec` is itself a `@Composable get()`
+    // (`material3/ConfirmationDialog.kt:1072-1073`), so the read belongs here and the value is what
+    // the coroutine captures.
+    val textOpacitySpec = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
     LaunchedEffect(Unit) {
-        dialogAnimatedDelay(MotionDurationTokens.DurationShort2.toLong())
-        opacity.animateTo(1f, DialogFastEffectsSpec)
+        wearAnimatedDelay(MotionDurationTokens.DurationShort2.toLong(), reduceMotion)
+        opacity.animateTo(1f, textOpacitySpec)
     }
     Box(modifier = modifier.container(dialogSurface()).matchParentSize()) {
         val horizontalPadding =
@@ -262,7 +262,7 @@ fun ConfirmationDialogContent(
                 confirmationDialogIconContainer(
                     size = ConfirmationLinearIconContainerSize,
                     targetShape = MaterialTheme.shapes.large,
-                    morphSpec = DialogDefaultSpatialSpec,
+                    morphSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
                     rotateFrom = ConfirmationIconInitialAngle,
                     iconColor = resolved.iconColor,
                     containerColor = resolved.iconContainerColor,
@@ -331,8 +331,11 @@ fun SuccessConfirmationDialogContent(
             val width = dialogScreenWidthFraction(context, SuccessWidthFraction)
             val targetHeight = dialogScreenHeightFraction(context, SuccessHeightFraction)
             val height = remember { Animatable(width.value) }
+            // Upstream's `successIconContainer` samples the local inside this same lambda
+            // (`material3/ConfirmationDialog.kt:1000` then `:1003`).
+            val reduceMotion = wearReduceMotionEnabled(context)
             LaunchedEffect(Unit) {
-                dialogAnimatedDelay(MotionDurationTokens.DurationShort2.toLong())
+                wearAnimatedDelay(MotionDurationTokens.DurationShort2.toLong(), reduceMotion)
                 height.animateTo(targetHeight.value, SuccessContainerAnimationSpec)
             }
             Box(
@@ -403,8 +406,9 @@ fun FailureConfirmationDialogContent(
         iconContainer = {
             val size = dialogScreenWidthFraction(context, FailureSizeFraction)
             val shake = remember { Animatable(FailureContentTransitionStart) }
+            val reduceMotion = wearReduceMotionEnabled(context)
             LaunchedEffect(Unit) {
-                dialogAnimatedDelay(MotionDurationTokens.DurationShort3.toLong())
+                wearAnimatedDelay(MotionDurationTokens.DurationShort3.toLong(), reduceMotion)
                 shake.animateTo(FailureContentTransitionMiddle, FailureContentFirstSpec)
                 shake.animateTo(FailureContentTransitionEnd, FailureContentSecondSpec)
             }
@@ -413,7 +417,7 @@ fun FailureConfirmationDialogContent(
             confirmationDialogIconContainer(
                 size = size,
                 targetShape = MaterialTheme.shapes.extraLarge,
-                morphSpec = DialogFastEffectsSpec,
+                morphSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
                 rotateFrom = null,
                 iconColor = resolved.iconColor,
                 containerColor = resolved.iconContainerColor,
@@ -553,40 +557,31 @@ object ConfirmationDialogDefaults {
  *
  * Upstream runs it as `LaunchedEffect(visible, a11yDurationMillis)`, so it starts when the dialog
  * shows, restarts when either key changes, and is cancelled outright when the effect leaves the
- * composition. [LaunchedEffect] here is `remember(keys) { tunerScope.launch { } }` and what it
- * remembers is the `Job`, which is not a `RememberObserver`: nothing cancels it when the keys change
- * or when the dialog is removed from the tree, so the timer would keep counting and call
- * [onDismissRequest] on a dialog that left the window up to [durationMillis] ago. [DisposableEffect]
- * is used instead because its handle runs on the emitted view's `onDetachedFromWindow` as well as on
- * a key change and on the tuner's dispose.
+ * composition. [LaunchedEffect] here does the same: it remembers a `LaunchedEffectCanceller`
+ * (`hibari-runtime/.../Effects.kt:22-39`), whose `onForgotten`/`onAbandoned` cancel the `Job`, so a
+ * key change and a node leaving the tree both stop the timer instead of letting it fire
+ * [onDismissRequest] on a dialog that went away up to [durationMillis] ago. An earlier revision of
+ * this function used [DisposableEffect] on the belief that nothing pruned those remembered values;
+ * that belief is false, and the `DisposableEffect` route was the leakier of the two, because its
+ * handle reaches a view only through the node that created it.
  *
- * What this still does not give is upstream's re-arm on a second showing: there is no `visible`
- * key here, and hibari never prunes the remembered values of a path whose nodes went away, so the
- * caller has to place the dialog in a fresh subtree to get the timer (and the entry animations)
- * again.
+ * What this still does not give is upstream's re-arm on a second showing: there is no `visible` key
+ * here, so the caller has to place the dialog in a fresh subtree to get the timer (and the entry
+ * animations) again.
  */
 @Tunable
 internal fun dialogAutoDismiss(onDismissRequest: () -> Unit, durationMillis: Long) {
     val dismiss = onDismissRequest
-    val scope = currentTuner.coroutineScope
-    DisposableEffect(durationMillis) {
-        val timer = scope.launch {
-            delay(durationMillis)
-            dismiss()
-        }
-        val stop: () -> Unit = { timer.cancel() }
-        stop
+    LaunchedEffect(durationMillis) {
+        delay(durationMillis)
+        dismiss()
     }
-}
-
-/** `animatedDelay(duration, reduceMotionEnabled)`, with the reduce-motion branch dropped. */
-internal suspend fun dialogAnimatedDelay(durationMillis: Long) {
-    delay(durationMillis)
 }
 
 /**
  * `ConfirmationDialogContentWrapper`: the dialog surface, the icon plate centred over it, and the
- * curved label above that, faded in over [DialogFastEffectsSpec] after `DurationShort2`.
+ * curved label above that, faded in over `MaterialTheme.motionScheme.fastEffectsSpec()` after
+ * `DurationShort2`.
  */
 @Tunable
 private fun confirmationDialogContentWrapper(
@@ -597,10 +592,18 @@ private fun confirmationDialogContentWrapper(
 ) {
     val container = iconContainer
     val slot = curvedText
+    // Upstream's `if (visible) KeepScreenOn()` (material3/ConfirmationDialog.kt:880-884), on the same
+    // fan-in point: this keeps the screen awake while the enter/exit animations run. There is no
+    // `visible` parameter here — the caller places the surface and stops placing it to hide it — so
+    // this surface's presence is the gate, and [KeepScreenOn]'s `RememberObserver` clears the flag
+    // when the branch goes away.
+    KeepScreenOn()
     val opacity = remember { Animatable(0f) }
+    val labelOpacitySpec = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
+    val reduceMotion = wearReduceMotionEnabled(currentContext)
     LaunchedEffect(Unit) {
-        dialogAnimatedDelay(MotionDurationTokens.DurationShort2.toLong())
-        opacity.animateTo(1f, DialogFastEffectsSpec)
+        wearAnimatedDelay(MotionDurationTokens.DurationShort2.toLong(), reduceMotion)
+        opacity.animateTo(1f, labelOpacitySpec)
     }
     Box(modifier = modifier.container(dialogSurface()).matchParentSize()) {
         container()
@@ -644,10 +647,12 @@ private fun BoxScope.confirmationDialogIconContainer(
     val rotation = remember { Animatable(startAngle) }
     val morph = remember { Animatable(0f) }
     val spec = morphSpec
+    val rotationSpec = MaterialTheme.motionScheme.slowEffectsSpec<Float>()
+    val reduceMotion = wearReduceMotionEnabled(currentContext)
     LaunchedEffect(Unit) {
-        dialogAnimatedDelay(MotionDurationTokens.DurationShort2.toLong())
+        wearAnimatedDelay(MotionDurationTokens.DurationShort2.toLong(), reduceMotion)
         launch { morph.animateTo(1f, spec) }
-        if (rotateFrom != null) rotation.animateTo(0f, DialogSlowEffectsSpec)
+        if (rotateFrom != null) rotation.animateTo(0f, rotationSpec)
     }
     Box(
         modifier = Modifier
@@ -788,7 +793,3 @@ private val FailureContentFirstSpec: AnimationSpec<Float> =
     spring(dampingRatio = ExpressiveDefaultDamping, stiffness = ExpressiveDefaultStiffness)
 private val FailureContentSecondSpec: AnimationSpec<Float> =
     spring(dampingRatio = 0.5f, stiffness = ExpressiveDefaultStiffness)
-
-/** `ExpressiveDefaultDamping` / `ExpressiveDefaultStiffness` from `MotionScheme.kt`. */
-private const val ExpressiveDefaultDamping = 0.75f
-private const val ExpressiveDefaultStiffness = 350f

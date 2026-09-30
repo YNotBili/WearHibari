@@ -68,10 +68,20 @@ private val SwipeToDismissViewAnimationSpec: TweenSpec<Float> =
  * being created fresh on each one. Same class of gap upstream already has for `key(...)`
  * (`:173`, documented at `SwipeToDismiss.kt:43-46`).
  *
- * `Modifier.hierarchicalFocusGroup(!isBackground)` (`:181`) and
- * `CompositionLocalProvider(LocalScreenIsActive provides …)` (`:175-178`) have no Views counterpart
- * and are **not ported**: focus order follows child order here, and no "screen is active" local is
- * pushed into the background slot while it is offscreen.
+ * `Modifier.hierarchicalFocusGroup(!isBackground)` (`:181`) is **not applied**, though it now has a
+ * counterpart: [com.huanli233.hibari.wear.hierarchicalFocusGroup] is live, keys its nodes off the
+ * View parent chain and resolves on the next `View.post`, and `Pager` already uses it per page. The
+ * consequence of leaving it off is narrower than it looks — at rest the background slot is `GONE`, so
+ * `View.addFocusables` skips it regardless — and what it does cost is mid-swipe and while the box is
+ * parked open: focus search then follows child order and can land on a background action, where
+ * upstream keeps the foreground subtree the live one. Adding it is one
+ * `.hierarchicalFocusGroup(active = !isBackground)` per slot container, and it only becomes
+ * observable once something inside a slot is a focus site
+ * ([com.huanli233.hibari.wear.requestFocusOnHierarchyActive]) or a caller drives focus with a
+ * [com.huanli233.hibari.wear.HierarchicalFocusRequester]; it is left off here rather than wired
+ * untested. `CompositionLocalProvider(LocalScreenIsActive provides …)` (`:175-178`) still has no
+ * Views counterpart — Hibari carries no screen-active local — so nothing pushes "this slot is
+ * offscreen" into the background content while it is revealed.
  *
  * ## The gesture
  *

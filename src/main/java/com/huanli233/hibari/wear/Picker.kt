@@ -160,8 +160,9 @@ fun rememberPickerState(
  * picker holds `LARGE_NUMBER_OF_ITEMS` slots when repeating, so many items map to one option and
  * [optionsOffset] carries that mapping across a change of [numberOfOptions].
  *
- * The `ScrollableState` interface is not implemented — Hibari has no `ScrollScope`/`MutatePriority`
- * to satisfy — so `scroll(scrollPriority, block)`, `dispatchRawDelta(delta)` and
+ * The `ScrollableState` interface is not implemented — `ScrollScope` does not exist in Hibari at all,
+ * and the one `MutatePriority` in the build (`hibari-animation`'s `InternalMutatorMutex.kt:34`) is
+ * `internal` to that module — so `scroll(scrollPriority, block)`, `dispatchRawDelta(delta)` and
  * `Modifier.scrollableForTouchExploration`'s use of them are absent. The three read-only properties
  * they are built on ([isScrollInProgress], [canScrollForward], [canScrollBackward]) are ported.
  * `scrollToOption`/`animateScrollToOption` are not `suspend`: they only need the main thread, which

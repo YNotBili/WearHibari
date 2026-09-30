@@ -1,6 +1,5 @@
 package com.huanli233.hibari.wear
 
-import android.content.Context
 import android.graphics.Canvas
 import android.graphics.ColorFilter
 import android.graphics.LinearGradient
@@ -11,7 +10,6 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.drawable.Drawable
 import android.os.SystemClock
-import android.provider.Settings
 import android.view.Choreographer
 import android.view.View
 import com.huanli233.hibari.animation.CubicBezierEasing
@@ -72,7 +70,7 @@ fun Modifier.placeholder(
         state = placeholderState,
         shape = shape,
         color = color ?: PlaceholderDefaults.color,
-        reduceMotion = placeholderReduceMotion(currentContext),
+        reduceMotion = wearReduceMotionEnabled(currentContext),
     ),
 )
 
@@ -100,7 +98,7 @@ fun Modifier.placeholderShimmer(
     shape: Shape = PlaceholderDefaults.shape,
     color: Color? = null,
 ): Modifier {
-    val reduceMotion = placeholderReduceMotion(currentContext)
+    val reduceMotion = wearReduceMotionEnabled(currentContext)
     val spec = if (reduceMotion) {
         null
     } else {
@@ -635,20 +633,6 @@ private fun View.installPlaceholderOverlay(
     val drawable = create(this, spec)
     setTag(tagKey, drawable)
     overlay.add(drawable)
-}
-
-/**
- * Upstream's `LocalReduceMotion`: the Wear OS accessibility toggle, read from
- * `Settings.Global.reduce_motion` exactly as `wear.compose.foundation.CompositionLocals` does.
- *
- * There is no reduce-motion `TunationLocal` in this port and a top-level one would be a name claim
- * on the whole package, so this reads the setting at tune time instead of observing it: flipping the
- * toggle takes effect on the next retune rather than instantly.
- */
-private fun placeholderReduceMotion(context: Context): Boolean = try {
-    Settings.Global.getInt(context.contentResolver, "reduce_motion", 0) == 1
-} catch (e: SecurityException) {
-    false
 }
 
 /**

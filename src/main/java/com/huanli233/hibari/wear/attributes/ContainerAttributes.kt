@@ -25,6 +25,10 @@ fun Modifier.container(spec: ContainerSpec): Modifier =
         // The spec is immutable, and a change to it may swap the pressed/disabled variants too, so
         // rebuild instead of mutate. Comparing against the live spec keeps a no-change retune free.
         if ((background as? ContainerDrawable)?.spec != it) {
+            // The outgoing drawable may be mid-fade; its ValueAnimator only stops on its own, and a
+            // pressed-then-rethemined container would otherwise keep invalidating a drawable that is
+            // no longer anyone's background.
+            (background as? ContainerDrawable)?.discard()
             background = if (it.isEmpty) null else ContainerDrawable(it, density)
         }
     }

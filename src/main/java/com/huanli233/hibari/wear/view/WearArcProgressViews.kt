@@ -42,10 +42,12 @@ import kotlin.math.sqrt
  * `strokePadding` term), and a shared public helper would collide with the other in-flight ports.
  *
  * Motion, not just rendering, lives here: upstream drives progress with an `Animatable` timed by
- * `MaterialTheme.motionScheme`, which has no Hibari counterpart, so the specs are reproduced from
- * their own constants instead — see SpringCurve. One difference cuts the other way: because the
- * motion runs on ValueAnimator, it obeys the platform animator duration scale ("no animations" in
- * developer options), which Compose's frame-clock driven animations ignore.
+ * `MaterialTheme.motionScheme`. This module has that member, but a `Drawable`/`View` is not a tunable
+ * body, so the local behind it cannot be read from here — the specs are reproduced from their own
+ * constants instead, which is what `MotionScheme.standard()` hands out — see SpringCurve. One
+ * difference cuts the other way: because the motion runs on ValueAnimator, it obeys the platform
+ * animator duration scale ("no animations" in developer options), which Compose's frame-clock driven
+ * animations ignore.
  */
 
 /** `MotionScheme` effects spring stiffnesses; upstream `internal` in MaterialTheme's MotionScheme. */

@@ -73,6 +73,13 @@ data class EdgeButtonGeometry(
  *  - **The morph is not animated.** Upstream recomputes the outline from the live height, so a
  *    button that grows animates through the arc maths; here the height is settled at measure time,
  *    so the shape moves with it in one step.
+ *  - **No `isFocusable` in `init`, deliberately.** A plain `View.requestFocus()` does need it, but
+ *    both focus paths of this port — [com.huanli233.hibari.wear.requestFocusOnHierarchyActive] and
+ *    [com.huanli233.hibari.wear.HierarchicalFocusRequester.requestFocus] — raise
+ *    `isFocusable`/`isFocusableInTouchMode` on the view they are handing focus to. So an edge button
+ *    becomes a focus target exactly when its caller declares one, as upstream's picker confirm button
+ *    does with `Modifier.focusRequester(…).focusable()` (`material3/TimePicker.kt:365-369`) and no
+ *    earlier; setting the flag here would make every edge button on the screen a tab stop.
  */
 class WearEdgeButtonView @JvmOverloads constructor(
     context: Context,

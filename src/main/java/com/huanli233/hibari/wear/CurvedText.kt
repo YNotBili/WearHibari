@@ -4,7 +4,6 @@ import com.huanli233.hibari.foundation.Node
 import com.huanli233.hibari.runtime.Tunable
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.graphics.Color
-import com.huanli233.hibari.ui.graphics.setLuminance
 import com.huanli233.hibari.ui.text.TextStyle
 import com.huanli233.hibari.ui.unit.TextUnit
 import com.huanli233.hibari.ui.uniqueKey
@@ -107,9 +106,18 @@ object TimeTextDefaults {
     fun backgroundColor(): Color =
         MaterialTheme.colorScheme.background.let { it.copy(alpha = it.alpha * 0.85f) }
 
-    /** `TimeTextDefaults.contentColor()`: `onBackground` lifted to luminance 80. */
+    /**
+     * `TimeTextDefaults.contentColor()` (`material3/TimeText.kt:176`): `onBackground` lifted to
+     * luminance 80.
+     *
+     * [setLuminanceTone] and not `com.huanli233.hibari.ui.graphics.setLuminance`, even though that one
+     * is the public of the two: upstream's `setLuminance` (material3/DynamicColorScheme.kt:116-125)
+     * takes a 0..100 Oklab/Cam tone, which is what [setLuminanceTone] reproduces verbatim, while
+     * hibari-ui's takes a 0..1 relative luminance and `coerceIn`s its argument — so `80f` through
+     * *that* one clamps to 1f and answers pure white.
+     */
     @Tunable
-    fun contentColor(): Color = MaterialTheme.colorScheme.onBackground.setLuminance(80f)
+    fun contentColor(): Color = MaterialTheme.colorScheme.onBackground.setLuminanceTone(80f)
 }
 
 /**
@@ -123,8 +131,12 @@ object TimeTextDefaults {
  *    keeps the arc-restricting modifier separate from the layout one; there is only [modifier] here,
  *    and `Modifier.curvedPadding` / `Modifier.curvedWeight` can ride on it, so what is missing is the
  *    split, not the capability.
- *  - the `TimeTextScope` `separatorText` / `separatorIcon` children (material3/TimeText.kt:222-223).
- *    There is no `TimeTextScope` in this port at all, so this is the single-label form.
+ *  - the separator slot. material3 has `CurvedScope.timeTextSeparator` (`material3/TimeText.kt:220-235`,
+ *    a slot-composable with `curvedTextStyle` and `contentArcPadding` parameters) and the v1 line has
+ *    `TimeTextDefaults.TextSeparator` / `textCurvedSeparator` (`material/TimeText.kt:57-58`, `:71-73`);
+ *    neither ships a `TimeTextScope` with `separatorText`/`separatorIcon` children. This port has no
+ *    `TimeTextScope` at all, so [TextSeparator] follows v1's naming and only covers the single-label
+ *    form.
  *
  * @param backgroundColor Defaults to `null` and resolves in the body:
  *   [TimeTextDefaults.backgroundColor] reads `MaterialTheme`, and a `@Tunable` default expression is

@@ -10,7 +10,6 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.graphics.Shader
 import android.os.Bundle
-import android.provider.Settings
 import android.util.AttributeSet
 import android.view.HapticFeedbackConstants
 import android.view.InputDevice
@@ -47,12 +46,16 @@ import com.huanli233.hibari.wear.PickerRotaryBehavior
 import com.huanli233.hibari.wear.PickerScope
 import com.huanli233.hibari.wear.PickerState
 import com.huanli233.hibari.wear.lazy.ListTransformParams
+import com.huanli233.hibari.wear.wearReduceMotionEnabled
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -140,14 +143,17 @@ internal data class PickerGroupProps(
  *    to a named option by swipe-a-then-tap is missing here; scrolling one option at a time is not.
  *  - `Modifier.scrollableForTouchExploration` (TalkBack's swipe driving the snap fling) becomes
  *    [performAccessibilityAction] with `ACTION_SCROLL_FORWARD`/`ACTION_SCROLL_BACKWARD`.
- *  - Rotary events are handled one per `onGenericMotionEvent`. Upstream feeds them through
- *    `Channel(capacity = Channel.CONFLATED)` collected with `collectLatest`, so a new event both
- *    drops any queued one and cancels the handler still running for the previous one, taking its
- *    `snapJob` with it. Here nothing is dropped and a running snap is not cancelled — so a fast
- *    continuous turn can settle on an intermediate target where upstream would have restarted.
+ *  - Rotary events go through a conflated channel collected with `collectLatest`, as upstream's
+ *    `RotaryInputNode` does (`foundation/rotary/RotaryScrollable.kt:1757`, `:1768-1790`, `:1798`), so a
+ *    new event drops any queued one and cancels the handler still running for the previous one at its
+ *    next suspension point. What it does not cancel is the running snap: upstream's `performScroll` is a
+ *    `suspend CoroutineScope.` extension (`:1431`) that starts `snapJob` with `with(this) { async{…} }`
+ *    (`:1517`), so the snap belongs to the pump's `launch` scope, and [rotaryJob] and
+ *    [rotaryScrollJob] living on [animatorScope] is that same shape rather than a shortcut.
  *  - Rotary haptics use [HapticFeedbackConstants.CLOCK_TICK]: upstream's per-device constant table
  *    (`Haptics.kt`'s `HapticConstants`, with Galaxy/Wear-3.5/Wear-4 magic numbers, plus API 35's
- *    `ScrollFeedbackProvider`) is not portable.
+ *    `ScrollFeedbackProvider`) is not portable. Its 30 ms throttle is, and [performSnapHaptic] applies
+ *    it — as first-event-only rather than upstream's first-and-last, for the reason given there.
  *  - `rotaryScrollable`'s overscroll and nested-scroll plumbing is dropped: nothing in the ported
  *    surface nests a picker inside another scrolling parent, so upstream's trailing `fling(0f)` into
  *    the overscroll effect has no destination.
@@ -157,10 +163,11 @@ internal data class PickerGroupProps(
  *    crown turn begun during a touch fling adds to it rather than replacing it.
  *  - The average item size reported to the rotary provider is the first bound row's height, which is
  *    upstream's own stated assumption ("all items in picker have the same height").
- *  - `LocalReduceMotion` is sampled when the attributes land and on attach rather than observed for
- *    changes, since the ported surface has no tunation local for it. Both of upstream's uses are
- *    covered: the shim alpha snaps instead of animating, and [resolvedTransform] blanks the per-item
- *    scale and fade the way `ReduceMotionScalingParams` does.
+ *  - `LocalReduceMotion` is sampled through the module's one source, `wearReduceMotionEnabled`, when
+ *    the attributes land and on attach rather than observed for changes, since the ported surface has
+ *    no tunation local for it. Both of upstream's uses are covered: the shim alpha snaps instead of
+ *    animating, and [resolvedTransform] blanks the per-item scale and fade the way
+ *    `ReduceMotionScalingParams` does.
  *  - Focus: upstream routes it through `hierarchicalFocusGroup` / `requestFocusOnHierarchyActive`,
  *    which have no Views counterpart. Here the picker that [autoCenteringTarget] marks — which is
  *    exactly the picker a `PickerGroup` selects — takes focus when it becomes the target, because
@@ -261,6 +268,22 @@ class WearPickerView @JvmOverloads constructor(
     private var rotaryScrollJob: Job? = null
     private var rotarySnapAnim = AnimationState(0f)
 
+    /** A queued `RotaryScrollEvent`, as far as this port needs one: time, delta, behaviour. */
+    private data class RotaryEvent(
+        val timestampMillis: Long,
+        val delta: Float,
+        val behavior: PickerRotaryBehavior,
+    )
+
+    /**
+     * Upstream's `RotaryInputNode.channel` (`foundation/rotary/RotaryScrollable.kt:1757`). Rebuilt on
+     * every attach, for the reason recorded in [onAttachedToWindow].
+     */
+    private var rotaryEvents: Channel<RotaryEvent>? = null
+
+    /** `Haptics.kt:87`'s `throttleThresholdMs`, applied to the tick this port emits. */
+    private var lastSnapHapticTime = 0L
+
     init {
         dragSlop = viewConfiguration.scaledTouchSlop.toFloat()
         // Rotary events reach a View only while it holds focus; upstream gets that focus through
@@ -292,7 +315,7 @@ class WearPickerView @JvmOverloads constructor(
         props = next
         if (next == null) return
         val first = previous == null
-        resolvedTransform = next.transform.copy(reduceMotion = isReduceMotionEnabled())
+        resolvedTransform = next.transform.copy(reduceMotion = wearReduceMotionEnabled(context))
         rotaryIsLowRes = next.rotary != null && isLowResInput()
         if (!first && previous!!.rotary != next.rotary) resetRotaryGesture()
         contentDescription = next.valueDescription
@@ -314,7 +337,7 @@ class WearPickerView @JvmOverloads constructor(
             boundWindow = null
             requestLayout()
         } else if (previous.readOnly != next.readOnly) {
-            animateShimTo(if (next.readOnly) 1f else 0f, snap = isReduceMotionEnabled())
+            animateShimTo(if (next.readOnly) 1f else 0f, snap = wearReduceMotionEnabled(context))
             // Upstream's `forceScrollWhenReadOnly`: a picker that has ever been editable re-centres
             // instantly when it turns read-only, so the shim is covering the right row.
             if (next.readOnly) {
@@ -338,13 +361,6 @@ class WearPickerView @JvmOverloads constructor(
     /** `isLowResInput()` in RotaryScrollable.kt: a bezel rather than a crown/rsb. */
     private fun isLowResInput(): Boolean =
         context.packageManager.hasSystemFeature(FEATURE_LOW_RES_ROTARY)
-
-    /** `LocalReduceMotion`: the Wear `reduce_motion` global, read live rather than observed. */
-    private fun isReduceMotionEnabled(): Boolean = try {
-        Settings.Global.getInt(context.contentResolver, SETTING_REDUCE_MOTION, 0) == 1
-    } catch (e: SecurityException) {
-        false
-    }
 
     /**
      * `LocalTouchExplorationStateProvider`: upstream's listener yields
@@ -576,7 +592,6 @@ class WearPickerView @JvmOverloads constructor(
             placeRow(row, cursor - row.measuredHeight / 2f, line)
             cursor -= row.measuredHeight + spacing
         }
-        layoutLabelHost()
     }
 
     private fun placeRow(row: PickerRowView, centre: Float, line: Float) {
@@ -608,6 +623,13 @@ class WearPickerView @JvmOverloads constructor(
         row.alpha = transform.alphaFor(progress)
     }
 
+    /**
+     * Frame the label host over the content area, at top-start — where upstream's outer `Box` puts it
+     * (`material3/Picker.kt:302-305`, default `Alignment.TopStart`, while the column itself is
+     * `.align(Center)`). Called from [onMeasure] and [onLayout] rather than from [placeRows], which
+     * returns early while there is no anchor row: the label has nothing to do with the row window, and
+     * [dispatchDraw] translates by this frame.
+     */
     private fun layoutLabelHost() {
         val host = labelHost ?: return
         host.layout(
@@ -635,9 +657,12 @@ class WearPickerView @JvmOverloads constructor(
             it.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
             labelHost = it
         }
-        // Re-added last so it rides above the rows: upstream overlays it inside the same Box.
-        removeView(host)
-        addView(host)
+        // It only has to *be* a child, for measure/layout and for the accessibility tree: [drawChild]
+        // holds it back from the normal pass and [dispatchDraw] composites it above the fade and the
+        // shim, so upstream's overlay order inside the `Box` (`material3/Picker.kt:302-305`) is
+        // reproduced without re-parenting. Moving it on every content change would detach and re-attach
+        // the tuned subtree each retune.
+        if (host.parent == null) addView(host)
         val holder = labelHolder ?: HibariViewHolder(host, content.parentTunation).also { labelHolder = it }
         holder.bind { BoxScopeInstance.label() }
     }
@@ -672,6 +697,7 @@ class WearPickerView @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(max(0, width - paddingLeft - paddingRight), MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(max(0, height - paddingTop - paddingBottom), MeasureSpec.EXACTLY),
         )
+        layoutLabelHost()
         // The scroll position lives in the state, so adopt it, then hand whole pitches to the index:
         // both the window and the placement need the pitch, which needs an already-measured row.
         props?.state?.let { centerOffsetPx = it.centerItemScrollOffset }
@@ -700,6 +726,7 @@ class WearPickerView @JvmOverloads constructor(
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         placeRows()
+        layoutLabelHost()
     }
 
     override fun generateDefaultLayoutParams(): LayoutParams =
@@ -710,13 +737,37 @@ class WearPickerView @JvmOverloads constructor(
         // A detached view cancelled its scope, and a `SupervisorJob` does not come back; make a new
         // one rather than letting a re-attached picker silently stop animating.
         if (!animatorScope.isActive) animatorScope = pickerAnimatorScope()
-        props?.let { resolvedTransform = it.transform.copy(reduceMotion = isReduceMotionEnabled()) }
+        // The channel is rebuilt per attach rather than drained, because that is the difference between
+        // this host and upstream's: their channel is a `val` on a `Modifier.Node`
+        // (`RotaryScrollable.kt:1757`), so a node re-entering composition gets a fresh channel and the
+        // event left in the old conflate slot dies with the node, while a recycled `View` outlives
+        // attach cycles. A `tryReceive` drain would keep reusing a channel upstream never reuses.
+        val events = Channel<RotaryEvent>(capacity = Channel.CONFLATED)
+        rotaryEvents = events
+        // `collectLatest` cancels the handler still running for the previous event at its next
+        // suspension point - the `delay` in the partial-scroll branch, after which it would otherwise
+        // reset the scroll state and re-snap onto a target a newer event has already moved. The snap
+        // animations deliberately do NOT ride that per-emission job: upstream's `performScroll` is a
+        // `suspend CoroutineScope.` extension (`:1431`) and starts its snap with
+        // `with(this) { async { ... } }` (`:1517`), so `snapJob` belongs to the pump's own `launch`
+        // scope. [rotaryJob] and [rotaryScrollJob] hanging off [animatorScope] is the same shape.
+        animatorScope.launch {
+            events.receiveAsFlow().collectLatest { event ->
+                performRotaryScroll(event.timestampMillis, event.delta, event.behavior)
+            }
+        }
+        props?.let {
+            resolvedTransform = it.transform.copy(reduceMotion = wearReduceMotionEnabled(context))
+        }
         props?.state?.picker = this
         requestFocusIfNeeded()
     }
 
     override fun onDetachedFromWindow() {
         animatorScope.cancel()
+        // The pump is a child of that scope, so it is gone with it; drop the channel as well rather
+        // than leaving an unconsumed event parked in the conflate slot.
+        rotaryEvents = null
         scrollJob?.cancel()
         rotaryJob?.cancel()
         rotaryScrollJob?.cancel()
@@ -741,6 +792,7 @@ class WearPickerView @JvmOverloads constructor(
         val props = props
         if (props == null) {
             super.dispatchDraw(canvas)
+            drawLabelLast(canvas)
             return
         }
         // `gradientColor == Color.Unspecified` is upstream's masking branch: the content is composited
@@ -768,6 +820,35 @@ class WearPickerView @JvmOverloads constructor(
             }
         }
         if (needsLayer) canvas.restoreToCount(token)
+        drawLabelLast(canvas)
+    }
+
+    /**
+     * The read-only label goes on last, and outside the mask layer: upstream puts it in the outer `Box`
+     * (`material3/Picker.kt:302-305`), above both the fade and the read-only shim. Drawn with the rows
+     * it would sit under them, and a read-only column sets `shimAlpha = 1f` (`onPickerPropsChanged`),
+     * which would bury "HOUR"/"MINUTE" entirely. [drawChild] holds the host back from the normal pass
+     * so this is the only place it is composited; it translates by the frame [layoutLabelHost] gave it,
+     * because `View.draw` expects to be positioned by its parent.
+     */
+    private fun drawLabelLast(canvas: Canvas) {
+        val label = labelHost ?: return
+        if (label.visibility == VISIBLE) {
+            val labelToken = canvas.save()
+            canvas.translate(label.left.toFloat(), label.top.toFloat())
+            label.draw(canvas)
+            canvas.restoreToCount(labelToken)
+        }
+    }
+
+    /**
+     * Keeps [labelHost] out of the normal child pass so [dispatchDraw] can put it above the shim —
+     * `ViewGroup` would otherwise draw it with the rows, in child order. Clipping and the parent's
+     * own translate still apply, because the canvas handed to [View.draw] is the parent's.
+     */
+    override fun drawChild(canvas: Canvas, child: View, drawingTime: Long): Boolean {
+        if (child === labelHost) return false
+        return super.drawChild(canvas, child, drawingTime)
     }
 
     /** `ContentDrawScope.drawGradient`: colour outside, transparent toward the focal band. */
@@ -1139,7 +1220,10 @@ class WearPickerView @JvmOverloads constructor(
         val axisDelta = event.getAxisValue(MotionEvent.AXIS_SCROLL)
         val delta = if (axisDelta != 0f) axisDelta else event.getAxisValue(MotionEvent.AXIS_VSCROLL)
         if (delta == 0f) return super.onGenericMotionEvent(event)
-        animatorScope.launch { performRotaryScroll(event.eventTime, delta, behavior) }
+        // `channel.trySend(event)` (`RotaryScrollable.kt:1798`): the send never blocks and never fails
+        // for a conflated channel, so the event either reaches the pump or replaces the one already
+        // waiting for it.
+        rotaryEvents?.trySend(RotaryEvent(event.eventTime, delta, behavior))
         return true
     }
 
@@ -1388,6 +1472,15 @@ class WearPickerView @JvmOverloads constructor(
 
     private fun performSnapHaptic(behavior: PickerRotaryBehavior) {
         if (!behavior.hapticsEnabled) return
+        // Upstream funnels every rotary haptic through `receiveAsFlow().throttleLatest(30)`
+        // (`foundation/rotary/Haptics.kt:90`, `:95`), whose own comment (`:88-89`) describes it as
+        // keeping the first *and last* event in the window. Keeping only the first is the same guard
+        // without a flow operator, and what it drops is a second tick inside 30 ms of the first: the
+        // snap target itself is unaffected, because the throttle sits after `updateSnapTarget` and
+        // upstream's handler thread never feeds back into the scroll.
+        val now = System.currentTimeMillis()
+        if (now <= lastSnapHapticTime + RotaryHapticThrottleMillis) return
+        lastSnapHapticTime = now
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
     }
 
@@ -1470,9 +1563,11 @@ class WearPickerView @JvmOverloads constructor(
         private const val EdgeVisibilityThreshold = 0.3f
         private const val GestureThresholdTimeMillis = 200L
         private const val SnapDelayMillis = 100L
+
+        /** `Haptics.kt:90` `throttleThresholdMs`. */
+        private const val RotaryHapticThrottleMillis = 30L
         private const val MaxSnapsPerEvent = 2
         private const val FEATURE_LOW_RES_ROTARY = "android.hardware.rotaryencoder.lowres"
-        private const val SETTING_REDUCE_MOTION = "reduce_motion"
 
         private val ScrollProximityEasing: Easing = CubicBezierEasing(0.0f, 0.0f, 0.5f, 1.0f)
     }

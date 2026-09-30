@@ -39,7 +39,8 @@ import kotlinx.coroutines.launch
  * Ported from androidx.wear.compose.material3.{OpenOnPhoneDialog, OpenOnPhoneDialogContent}.
  *
  * Window presentation is not hibari-wear's job: no `Dialog`/`DialogFragment` hosting, no scrim, no
- * back handling, no swipe-to-dismiss, no focus, and `KeepScreenOn()` (a window flag) with them.
+ * back handling, no swipe-to-dismiss, no focus. `KeepScreenOn()` is the exception — upstream gates it
+ * on `visible`, and here [OpenOnPhoneDialogContent] calls it for as long as the surface is placed.
  * Upstream's `visible` parameter goes too — the caller places this surface itself, exactly like
  * [Card], and stops composing it to hide it. The `durationMillis` timer that calls
  * `onDismissRequest` is content, not window, and is ported.
@@ -142,22 +143,35 @@ fun OpenOnPhoneDialogContent(
     val context = currentContext
     val iconSlot = content
     val label = curvedText
-    // `LocalReduceMotion.current`. Upstream caches it for the composition, so it is read once here
-    // rather than on every retune; a change to the setting takes effect on the next composition.
-    val reduceMotion = remember { openOnPhoneReduceMotionEnabled(context) }
+    // Upstream's `if (visible) KeepScreenOn()` (material3/OpenOnPhoneDialog.kt:119-123): the flag held
+    // for the whole showing, so the ring animation runs to completion instead of the screen timing
+    // out mid-sweep. This port has no `visible` parameter — the caller places the surface and stops
+    // placing it to hide it — so the surface's presence is the gate, and [KeepScreenOn]'s
+    // `RememberObserver` clears the flag when it goes away.
+    KeepScreenOn()
+    // `LocalReduceMotion.current`, through the module's one sampler. Upstream caches it for the
+    // composition, so it is read once here rather than on every retune; a change to the setting takes
+    // effect on the next composition. See `ReduceMotion.kt`.
+    val reduceMotion = remember { wearReduceMotionEnabled(context) }
 
     val progressAnimatable = remember { Animatable(0f) }
     val labelOpacity = remember { Animatable(0f) }
     var finalAnimation by remember { mutableStateOf(false) }
     val progressDuration = durationMillis - MotionDurationTokens.DurationLong2.toLong()
+    // Upstream reads all four off `MaterialTheme.motionScheme` in this same body
+    // (`material3/OpenOnPhoneDialog.kt:199, 225-227`) and hands the values into its coroutines and
+    // `animate*AsState` calls, so the theme — not a hard-coded spring — decides what runs.
+    val alphaAnimationSpec = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
+    val sizeAnimationSpec = MaterialTheme.motionScheme.defaultSpatialSpec<Float>()
+    val progressAlphaAnimationSpec = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
+    val colorReversalAnimationSpec = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
 
     LaunchedEffect(durationMillis) {
         launch {
-            // `animatedDelay(DurationShort3, reduceMotionEnabled)`: reduced motion skips the delay.
-            if (!reduceMotion) {
-                dialogAnimatedDelay(MotionDurationTokens.DurationShort3.toLong())
-            }
-            labelOpacity.animateTo(1f, DialogFastEffectsSpec)
+            // Upstream's `animatedDelay(DurationShort3, reduceMotionEnabled)`
+            // (`material3/OpenOnPhoneDialog.kt:204`): the delay is skipped outright, not shortened.
+            wearAnimatedDelay(MotionDurationTokens.DurationShort3.toLong(), reduceMotion)
+            labelOpacity.animateTo(1f, alphaAnimationSpec)
         }
         launch {
             if (reduceMotion) {
@@ -181,17 +195,17 @@ fun OpenOnPhoneDialogContent(
     // ring's alpha both ride it, so one reading serves both.
     val sizeFraction = animateFloatAsState(
         targetValue = if (finalAnimation) 0f else 1f,
-        animationSpec = DialogDefaultSpatialSpec,
+        animationSpec = sizeAnimationSpec,
     ).value
     val progressAlpha = animateFloatAsState(
         targetValue = if (finalAnimation) 0f else 1f,
-        animationSpec = DialogDefaultEffectsSpec,
+        animationSpec = progressAlphaAnimationSpec,
     ).value
     // Upstream reverses the two colours with `animateColorAsState`; one fraction plus `lerp` over the
     // same spec lands on the same per-channel interpolation.
     val reversal = animateFloatAsState(
         targetValue = if (finalAnimation) 1f else 0f,
-        animationSpec = DialogDefaultEffectsSpec,
+        animationSpec = colorReversalAnimationSpec,
     ).value
     val iconColor = lerp(resolved.iconColor, resolved.iconContainerColor, reversal)
     val plateColor = lerp(resolved.iconContainerColor, resolved.iconColor, reversal)
@@ -428,23 +442,3 @@ private val ProgressPadding: Dp = 5.dp
  * context to ask `WearScreen.edgePaddingDp` with even if it were.
  */
 private val OpenOnPhoneCurvedTextEdgePadding: Dp = 2.dp
-
-/**
- * `LocalReduceMotion`: upstream's computed default reads the Wear `reduce_motion` global off the
- * application context's resolver and swallows a [SecurityException] as false, which is copied here
- * verbatim; `WearPickerViews` reads the same setting for the same local. Upstream registers a content
- * observer on a cached value, so a change mid-dialog re-reads it — that needs a DisposableEffect the
- * tune pass cannot key on, so here the setting is read once per composition instead.
- */
-private fun openOnPhoneReduceMotionEnabled(context: Context): Boolean = try {
-    Settings.Global.getInt(
-        context.applicationContext.contentResolver,
-        OpenOnPhoneReduceMotionSetting,
-        0,
-    ) == 1
-} catch (e: SecurityException) {
-    false
-}
-
-/** `CompositionLocals.REDUCE_MOTION`. */
-private const val OpenOnPhoneReduceMotionSetting = "reduce_motion"

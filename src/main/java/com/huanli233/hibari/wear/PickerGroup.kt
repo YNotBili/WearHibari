@@ -29,12 +29,17 @@ import com.huanli233.hibari.wear.view.WearPickerView
  * [WearPickerGroupView] (`AutoCenteringRow`).
  *
  * Parameter deviations, all forced by the compiler plugin or by the Views model:
- *  - `focusRequester` is absent from [PickerGroupScope.PickerGroupItem], and so are
- *    `hierarchicalFocusGroup(active = selected)` and `requestFocusOnHierarchyActive()`: wear
- *    Compose's focus coordination has no Hibari or `android.view` counterpart. [WearPickerView]
- *    approximates what the pickers needed it for — it takes focus when it becomes the
- *    auto-centering target, which is the same event as being selected, and that is what carries
- *    rotary input.
+ *  - Upstream's `focusRequester: FocusRequester?` is here an optional
+ *    [HierarchicalFocusRequester] bound to the column's own view with
+ *    [hierarchicalFocusRequester], and the focus tree is wired: every
+ *    [PickerGroupScope.PickerGroupItem] carries [hierarchicalFocusGroup] (`active = selected`) plus
+ *    [requestFocusOnHierarchyActive] when the caller passed no requester — the same either/or
+ *    upstream's `PickerGroupItem` chooses between. What is still absent next to upstream is that
+ *    element's `onPreviewKeyEvent` dpad swallow (`HierarchicalFocus.kt:79, 120-125`), which Views
+ *    cannot express per subtree; see deviation 1 of [HierarchicalFocusCoordinator].
+ *    [WearPickerView] also keeps taking focus when it becomes the auto-centring target, which is the
+ *    same event as being selected and is what carries rotary input — the two requests land on one
+ *    view, so they agree.
  *  - `selectedPickerState` no longer installs `Modifier.scrollableForTouchExploration` on the row.
  *    Instead the row answers `ACTION_SCROLL_FORWARD`/`ACTION_SCROLL_BACKWARD` by moving
  *    [selectedPickerState]'s picker one option, which is what that `Modifier.scrollable` did for
@@ -42,8 +47,12 @@ import com.huanli233.hibari.wear.view.WearPickerView
  *  - `LocalTouchExplorationStateProvider` is read once per tune instead of subscribed to, so a
  *    touch-exploration change while the screen is idle does not re-tune the group; the pickers
  *    still read it live for their own gestures. See [WearPickerView] for the same trade-off.
- *  - `MaterialTheme.motionScheme.fastSpatialSpec()` is not ported, so the centring spring's two
- *    numbers are the ones from `MotionScheme.standard()`, which is upstream's default scheme.
+ *  - `MaterialTheme.motionScheme.fastSpatialSpec()` is not what feeds the centring spring here, even
+ *    though this module has that member (`MotionScheme.kt`, reached through `MaterialTheme`). It hands
+ *    out a `FiniteAnimationSpec<T>`, whose damping and stiffness are only reachable by an unchecked
+ *    downcast to `SpringSpec`, and [WearPickerGroupView] integrates the spring itself rather than
+ *    running a Compose spec — so the two numbers are passed straight through, taken from
+ *    `MotionScheme.standard()`, which is upstream's default scheme.
  *
  * @param modifier [Modifier] to be applied to the [PickerGroup].
  * @param selectedPickerState The [PickerState] of the [Picker] that is selected. Null value means
@@ -106,12 +115,26 @@ class PickerGroupScope {
      * (`rememberUpdatedState`) is the fresh `onSelected` in the content attribute of each tune, which
      * is also what makes the rows re-bind.
      *
+     * The focus half of upstream's chain is `.hierarchicalFocusGroup(active = selected)` followed by
+     * `focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier.requestFocusOnHierarchyActive()`,
+     * and it is reproduced with [hierarchicalFocusGroup], [hierarchicalFocusRequester] and
+     * [requestFocusOnHierarchyActive]. So an item with no requester of its own is what the group
+     * focuses when it becomes the selected one — which is how rotary input reaches it — and an item
+     * handed a requester is left to whoever supplied it, exactly as upstream documents.
+     *
      * @param pickerState The state of the picker.
      * @param selected If the [Picker] is selected.
      * @param onSelected Action triggered when the [Picker] is selected by clicking.
      * @param modifier [Modifier] to be applied to the [Picker].
      * @param contentDescription A block which computes text used by accessibility services to
      *   describe what the selected option represents. This text should be localized.
+     * @param focusRequester Optional [HierarchicalFocusRequester] for the [Picker]. When it is
+     *   `null` — upstream's default — this item asks for focus itself, through
+     *   [requestFocusOnHierarchyActive], which is what coordinates focus between the pickers. When
+     *   one is supplied, the caller owns focus for this column and the focus site is not installed;
+     *   [hierarchicalFocusGroup] still is, so an inactive column never keeps the hierarchy live.
+     *   Switching the parameter across retunes is harmless: both roles sit on one merged node whose
+     *   View cannot change, so the resolved focus target is the same column either way.
      * @param readOnlyLabel A slot for providing a label, displayed above the selected option when
      *   the [Picker] is read-only. The label is overlaid with the currently selected option within a
      *   box, so it is recommended that the label is given `Gravity.TOP_CENTER` via
@@ -128,6 +151,7 @@ class PickerGroupScope {
         onSelected: () -> Unit,
         modifier: Modifier = Modifier,
         contentDescription: (() -> String)? = null,
+        focusRequester: HierarchicalFocusRequester? = null,
         readOnlyLabel: (@Tunable BoxScope.() -> Unit)? = null,
         verticalSpacing: Dp = 0.dp,
         option: @Tunable PickerScope.(optionIndex: Int, pickerSelected: Boolean) -> Unit,
@@ -135,12 +159,23 @@ class PickerGroupScope {
         val userModifier = modifier
         val autoCentering = selected && autoCenteringEnabled
         val scrollEnabled = !touchExplorationEnabled || selected
+        // Upstream's `then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier
+        // .requestFocusOnHierarchyActive())`: the caller's requester takes the column's focus, or
+        // this item asks the hierarchy for it.
+        val requester = focusRequester
+        val itemFocus: Modifier = if (requester != null) {
+            Modifier.hierarchicalFocusRequester(requester)
+        } else {
+            Modifier.requestFocusOnHierarchyActive()
+        }
         Picker(
             state = pickerState,
             contentDescription = contentDescription,
             modifier = userModifier
                 .pickerAutoCenteringTarget(autoCentering)
-                .pickerSelectOnDown(!touchExplorationEnabled && !selected),
+                .pickerSelectOnDown(!touchExplorationEnabled && !selected)
+                .hierarchicalFocusGroup(active = selected)
+                .then(itemFocus),
             readOnly = !selected,
             readOnlyLabel = readOnlyLabel,
             onSelected = onSelected,
@@ -186,8 +221,14 @@ internal fun Modifier.pickerSelectOnDown(active: Boolean): Modifier =
 /**
  * `LocalTouchExplorationStateProvider.current.touchExplorationState()`, whose `Listener` in
  * wear's foundation is `accessibilityManager.isEnabled && isTouchExplorationEnabled`. Upstream
- * subscribes to both change listeners and recomposes; there is no such local here, so it is sampled
- * per tune — see the note on [PickerGroup].
+ * subscribes to both change listeners and recomposes; this group does not — it samples per tune, so
+ * a service toggle while the screen is idle cannot re-tune every column.
+ *
+ * That is now a deliberate deviation rather than a missing piece: the local and its subscribing
+ * helper, [touchExplorationState] (TouchExplorationStateProvider.kt), both exist and return a live
+ * `State<Boolean>` — [com.huanli233.hibari.wear.DatePicker] reads it that way. Folding this onto that
+ * call is the convergence-list move; it would subscribe the group, which is exactly what the note on
+ * [PickerGroup] declines to do.
  */
 private fun isPickerTouchExplorationEnabled(context: Context): Boolean {
     val manager = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
