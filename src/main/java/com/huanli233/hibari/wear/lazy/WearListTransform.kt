@@ -38,7 +38,10 @@ data class ListTransformParams(
     /**
      * Upstream pads the composed range by `viewportHeight / 20` so shrunk items leave no gap. It
      * shifts where the transition line is measured from and is kept so a ported call site sees the
-     * same numbers.
+     * same numbers. Expressed as a fraction rather than upstream's `(Constraints) -> Int` resolver
+     * (`foundation/lazy/ScalingLazyColumn.kt:848`), so the truncation to whole pixels that resolver
+     * performs is applied where the pad is used, in [progressFor] — on a 193 px viewport upstream's pad
+     * is 9 px, not 9.65.
      */
     val viewportVerticalOffsetFraction: Float = 1f / 20f,
     /** What `LocalReduceMotion` swaps in upstream: no scaling, no fading. */
@@ -69,7 +72,8 @@ data class ListTransformParams(
      */
     fun progressFor(top: Float, height: Float, viewportHeight: Float): Float {
         if (viewportHeight <= 0f || reduceMotion) return 0f
-        val offset = viewportHeight * viewportVerticalOffsetFraction
+        // Upstream's resolver returns an Int, so the pad is a whole number of pixels.
+        val offset = (viewportHeight * viewportVerticalOffsetFraction).toInt().toFloat()
         val adjustedTop = top - offset
         val bottom = adjustedTop + height
         val distance = min(viewportHeight - adjustedTop, bottom)

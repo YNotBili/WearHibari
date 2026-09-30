@@ -93,6 +93,17 @@ class ListTransformParamsTest {
     }
 
     @Test
+    fun `the viewport pad is a whole pixel, as upstream's Int resolver returns`() {
+        // Upstream's default is `viewportVerticalOffsetResolver = { (it.maxHeight / 20f).toInt() }`
+        // (`foundation/lazy/ScalingLazyColumn.kt:848`), so on a 193 px viewport the pad is 9 px, not
+        // 9.65. That 0.65 px is what decides this item: with the integer pad its `distance` is 68 and
+        // the fraction 0.3523 clears the 0.35 transition line, so it is full size; a fractional pad
+        // gives 67.35, the fraction 0.3490 sits under the line, and the item starts ramping.
+        val oddViewport = params.progressFor(top = 57f, height = 20f, viewportHeight = 193f)
+        assertEquals(0f, oddViewport, 0f)
+    }
+
+    @Test
     fun `degenerate viewport and inverted element bounds never produce NaN`() {
         assertEquals(0f, params.progressFor(top = 10f, height = 20f, viewportHeight = 0f), 0f)
         val flat = params.copy(minElementHeight = 0.5f, maxElementHeight = 0.5f)

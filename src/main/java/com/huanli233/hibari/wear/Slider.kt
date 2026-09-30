@@ -18,6 +18,7 @@ import com.huanli233.hibari.foundation.attributes.matchParentWidth
 import com.huanli233.hibari.foundation.attributes.size
 import com.huanli233.hibari.foundation.attributes.width
 import com.huanli233.hibari.runtime.Tunable
+import com.huanli233.hibari.runtime.currentContext
 import com.huanli233.hibari.runtime.remember
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.geometry.Shape
@@ -93,11 +94,16 @@ import kotlin.math.roundToInt
  *    gives it an explicit `tween(DurationShort3, EasingStandardDecelerate)` (`Slider.kt:174-184`, i.e.
  *    150 ms on `CubicBezierEasing(0f, 0f, 0f, 1f)` per `tokens/MotionTokens.kt:44,61`) instead of a
  *    default spring.
- *  - **Every `Brush` is a solid [Color]**, following [ProgressIndicatorColors], and
- *    `getString(R.string.wear_m3c_slider_{decrease,increase}_content_description)` (`internal/Strings.kt:95-99`)
- *    cannot be ported without adding resources, so [SliderDefaults.increaseIconContentDescription] and
- *    [SliderDefaults.decreaseIconContentDescription] carry the two English values themselves,
- *    `Increase` and `Decrease` (`res/values/wear_m3c_strings.xml:16-17`).
+ *  - **Every `Brush` is a solid [Color]**, following [ProgressIndicatorColors]. The two icon
+ *    descriptions are no longer a deviation: upstream's
+ *    `wear_m3c_slider_{decrease,increase}_content_description` strings
+ *    (`internal/Strings.kt:95-99`) are read from this module's own
+ *    `res/values/strings.xml`, whose keys and default English text are upstream's
+ *    (`res/values/wear_m3c_strings.xml:16-17`). Only the *shape* differs — upstream reaches them as a
+ *    `@Composable get()` used as a default argument, which a `@Tunable` default expression cannot do,
+ *    so [SliderDefaults.DecreaseIcon] and [SliderDefaults.IncreaseIcon] take `String? = null` and
+ *    resolve [SliderDefaults.decreaseIconContentDescription] / [increaseIconContentDescription] in the
+ *    body.
  *  - **`shape` and `colors` default to `null`** rather than to `SliderDefaults.shape` /
  *    `SliderDefaults.sliderColors()`: a `@Tunable` function's default expressions are hoisted out of
  *    its tuner scope, so nothing that reads the theme can sit there. Both are resolved in the body.
@@ -293,16 +299,17 @@ object SliderDefaults {
     val MaxSegmentSteps: Int = 8
 
     /**
-     * The default content description for the increase icon. Upstream reads
-     * `R.string.wear_m3c_slider_increase_content_description`; this port adds no resources.
+     * The default content description for the increase icon. Upstream's is a `@Composable get()`
+     * reading `R.string.wear_m3c_slider_increase_content_description`
+     * (`internal/Strings.kt` `SliderIncreaseIconContentDescription`); here it is a `@Tunable` getter
+     * over the same key, declared in this module with upstream's name and default English text.
      */
-    val increaseIconContentDescription: String = "Increase"
+    val increaseIconContentDescription: String
+        @Tunable get() = currentContext.getString(R.string.wear_m3c_slider_increase_content_description)
 
-    /**
-     * The default content description for the decrease button. Upstream reads
-     * `R.string.wear_m3c_slider_decrease_content_description`; this port adds no resources.
-     */
-    val decreaseIconContentDescription: String = "Decrease"
+    /** [increaseIconContentDescription], for the decrease button: `..._decrease_content_description`. */
+    val decreaseIconContentDescription: String
+        @Tunable get() = currentContext.getString(R.string.wear_m3c_slider_decrease_content_description)
 
     /** The recommended [Shape] for Slider: `SliderTokens.ContainerShape`, i.e. corner large. */
     val shape: Shape
@@ -313,33 +320,43 @@ object SliderDefaults {
      * a [Drawable] because the Views side can only tint what the framework hands back (see [Icon]).
      *
      * @param modifier Modifier to be applied to the decrease icon.
-     * @param contentDescription The content description for the decrease icon.
+     * @param contentDescription The content description for the decrease icon. Null resolves
+     *   [decreaseIconContentDescription] in the body: upstream can read a `@Composable get()` as a
+     *   default value, but a `@Tunable` default expression is hoisted into a non-`@Tunable` method with
+     *   no tuner to ask, so the resource is read here instead.
      */
     @Tunable
     fun DecreaseIcon(
         modifier: Modifier = Modifier,
-        contentDescription: String = decreaseIconContentDescription,
-    ): Unit = Icon(
-        image = SliderIconDrawable(SliderRemoveIconPath),
-        contentDescription = contentDescription,
-        modifier = modifier.size(DpSize(IconSize, IconSize)),
-    )
+        contentDescription: String? = null,
+    ) {
+        val description = contentDescription ?: decreaseIconContentDescription
+        Icon(
+            image = SliderIconDrawable(SliderRemoveIconPath),
+            contentDescription = description,
+            modifier = modifier.size(DpSize(IconSize, IconSize)),
+        )
+    }
 
     /**
      * The recommended increase icon, upstream's `Icons.Add`.
      *
      * @param modifier Modifier to be applied to the increase icon.
-     * @param contentDescription The content description for the increase icon.
+     * @param contentDescription The content description for the increase icon. Null resolves
+     *   [increaseIconContentDescription] in the body, for the reason given on [DecreaseIcon].
      */
     @Tunable
     fun IncreaseIcon(
         modifier: Modifier = Modifier,
-        contentDescription: String = increaseIconContentDescription,
-    ): Unit = Icon(
-        image = SliderIconDrawable(SliderAddIconPath),
-        contentDescription = contentDescription,
-        modifier = modifier.size(DpSize(IconSize, IconSize)),
-    )
+        contentDescription: String? = null,
+    ) {
+        val description = contentDescription ?: increaseIconContentDescription
+        Icon(
+            image = SliderIconDrawable(SliderAddIconPath),
+            contentDescription = description,
+            modifier = modifier.size(DpSize(IconSize, IconSize)),
+        )
+    }
 
     /**
      * Creates a [SliderColors] that represents the default background and content colors used in an

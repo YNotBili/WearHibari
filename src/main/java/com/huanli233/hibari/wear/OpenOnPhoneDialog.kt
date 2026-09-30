@@ -65,10 +65,10 @@ import kotlinx.coroutines.launch
  *  - `OpenOnPhoneDialogDefaults.Icon`, the default `content`: it is an `AnimatedVectorDrawable`
  *    loaded as `R.drawable.wear_m3c_open_on_phone_animation` — three filled paths (laptop, phone,
  *    dot) in a 520x520 viewport, held at `scaleY = 0` until `IconDelay` (67 ms) and then path-morphed
- *    and translated — and this module ships no resources and invents no ids. The slot therefore has
- *    no default, and nothing here draws a hand-made replacement for those paths.
- *  - `OpenOnPhoneDialogDefaults.text`: `stringResource(R.string.wear_m3c_open_on_phone)`, same
- *    reason. Callers pass their own string.
+ *    and translated — and this module ships no drawable resources, so no drawable id may be invented.
+ *    The slot therefore has no default, and nothing here draws a hand-made replacement for those paths.
+ *  - `OpenOnPhoneDialogDefaults.text` is ported as [OpenOnPhoneDialogDefaults.text], reading the
+ *    upstream key from this module's own `res/values/strings.xml`.
  *  - `CurvedScope.openOnPhoneDialogCurvedText` is here as the top-level
  *    [CurvedLayoutScope.openOnPhoneDialogCurvedText]: this module spells upstream's `CurvedScope`
  *    [CurvedLayoutScope], and upstream's `CurvedTextStyle` is a plain [TextStyle], which is what
@@ -318,6 +318,15 @@ object OpenOnPhoneDialogDefaults {
     /** Default timeout for the dialog, in milliseconds. */
     val DurationMillis: Long = 4000L
 
+    /**
+     * Upstream's `OpenOnPhoneDialogDefaults.text` (`material3/OpenOnPhoneDialog.kt:306-307`), a
+     * `@Composable get()` over `stringResource(R.string.wear_m3c_open_on_phone)` — "Check your phone",
+     * verbatim from `res/values/wear_m3c_strings.xml:20`. A `@Tunable` getter is this module's
+     * counterpart, so the string is read from resources rather than carried as a literal.
+     */
+    val text: String
+        @Tunable get() = currentContext.getString(R.string.wear_m3c_open_on_phone)
+
     /** The size upstream's default icon is drawn at; private there, public here because the slot has no default. */
     val IconSize: Dp = 52.dp
 
@@ -371,9 +380,10 @@ object OpenOnPhoneDialogDefaults {
         )
     }
 
-    // `Icon` (the animated `wear_m3c_open_on_phone_animation` vector, with its private `IconDelay`
-    // of 67 ms) and `text` (`R.string.wear_m3c_open_on_phone`) are not ported: this module ships no
-    // resources.
+    // Only the `Icon` is unported here: upstream's is the animated
+    // `R.drawable.wear_m3c_open_on_phone_animation` vector (with its private `IconDelay` of 67 ms), and
+    // this module ships no drawable resources, so no drawable id may be invented. Its `text` is
+    // ported — see [OpenOnPhoneDialogDefaults.text].
 }
 
 /**

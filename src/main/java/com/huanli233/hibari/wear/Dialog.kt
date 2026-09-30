@@ -71,8 +71,10 @@ import com.huanli233.hibari.wear.view.WearSwipeToDismissView
  *    which [MaterialTheme] documents as unported. Dropping the animations also drops the reason
  *    `shouldShow = showState || currentState == Display` (`:90`) keeps a hidden dialog composed: with
  *    nothing to animate out, `visible` alone is the right gate, which is what upstream reduces to.
- *  - `swipeToDismissBoxState.offset`-driven background scaling (`:106-129`) — same parent-scale
- *    plumbing, on `LocalReduceMotion` (`:98`), which is also unported.
+ *  - `swipeToDismissBoxState.offset`-driven background scaling (`:106-129`), which also keys off
+ *    `LocalReduceMotion` (`:98`), is not ported. The reduce-motion *source* now exists — this module
+ *    reads it through `wearReduceMotionEnabled` in `ReduceMotion.kt` — so what is missing here is the
+ *    offset-driven scale itself, not the setting.
  *  - The window configuration block (`:146-158`): `setWindowAnimations(Animation)`,
  *    `setDimAmount(0f)` and `setLayout(MATCH_PARENT, MATCH_PARENT)`. The dim is the one thing whose
  *    *absence* is faithful — upstream sets it to zero and paints `colorScheme.background` itself — and

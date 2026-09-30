@@ -9,6 +9,7 @@ import android.util.LruCache
 import com.huanli233.hibari.foundation.Node
 import com.huanli233.hibari.runtime.Tunable
 import com.huanli233.hibari.runtime.bindState
+import com.huanli233.hibari.runtime.currentContext
 import com.huanli233.hibari.runtime.derivedStateOf
 import com.huanli233.hibari.runtime.locals.LocalDensity
 import com.huanli233.hibari.runtime.locals.LocalLayoutDirection
@@ -61,12 +62,28 @@ fun Modifier.animatedText(spec: AnimatedTextSpec): Modifier =
  * [progressFraction] travels 0f to 1f (`AnimatedText.kt:70-82`). The animation clock is the
  * caller's — upstream takes `progressFraction: () -> Float` and the component never animates itself.
  *
- * Re-expressions, all in the drawing view; see [WearAnimatedTextView] for each:
+ * Deviations from upstream's shape, one per bullet; the drawing-side ones are expanded in
+ * [WearAnimatedTextView]:
  *  - `Canvas(modifier.size(state.size))` becomes a `View` whose `onMeasure` reports the same
  *    max(start, end) box (`AnimatedText.kt:122-123`, `:436`, `:545-548`).
- *  - `LocalReduceMotion` has no Hibari counterpart, so upstream's "reduce motion ⇒ draw the end
- *    configuration statically" branch (`AnimatedText.kt:114`, `:127-133`) is not ported. A caller
- *    that wants it passes `progressFraction = { 1f }`, which is what that branch computes anyway.
+ *  - The reduce-motion branch (`AnimatedText.kt:114`, `:132-133`) **is** ported: upstream samples
+ *    `LocalReduceMotion.current` and then picks the drawn fraction with
+ *    `if (isReduceMotionEnabled) 1f else progressFraction()`, and that same `if` is what
+ *    [derivedStateOf] evaluates here, so under reduce motion [progressFraction] is never called and
+ *    the view is handed the end configuration (`view/WearAnimatedTextView.kt:112-125`).
+ *    The remaining deviation is *how the setting is known*: Hibari has no reduce-motion
+ *    `TunationLocal` — this module's only source is [wearReduceMotionEnabled] in `ReduceMotion.kt`,
+ *    a **live** `Settings.Global` read sampled once per tune, deliberately not cached and not
+ *    observed (`ReduceMotion.kt:118-131`, with its header at `:64-72` explaining what it does not
+ *    reproduce from upstream's `compositionLocalWithComputedDefaultOf`). So a wearer who flips the
+ *    setting mid-animation sees the change on this node's *next* tune, not on the next frame;
+ *    upstream's `ContentObserver` (`foundation/CompositionLocals.kt:44-52`) is what we cannot match.
+ *    Upstream's second `updateText(text)` under reduce motion (`AnimatedText.kt:127-129`) has no
+ *    counterpart and needs none: it is there because the Canvas lambda is the only thing that
+ *    re-reads the string once nothing animates, whereas [text] here travels into
+ *    [AnimatedTextSpec] on every tune and a changed value re-shapes the view
+ *    (`view/WearAnimatedTextView.kt:74-79`). Our string cannot go stale, so there is nothing to
+ *    refresh.
  *  - `semantics { text = AnnotatedString(text) }` (`AnimatedText.kt:123-125`) is not ported: a
  *    `TextView`-less custom `View` gets no accessibility text node here, the same gap every other
  *    drawn text view in this module has.
@@ -87,7 +104,14 @@ fun AnimatedText(
     modifier: Modifier = Modifier,
     contentAlignment: Alignment = Alignment.Center,
 ) {
-    val fractionState = remember(progressFraction) { derivedStateOf { progressFraction() } }
+    val reduceMotion = wearReduceMotionEnabled(currentContext)
+    // Upstream chooses the fraction inside the draw scope — `if (isReduceMotionEnabled) 1f else
+    // progressFraction()` (`material3/AnimatedText.kt:133`) — after sampling `LocalReduceMotion` at
+    // `:114`. The same choice is made here, and when the setting is on the derived state reads nothing
+    // outside its own constant, so a caller's animation cannot pull the text back into motion.
+    val fractionState = remember(progressFraction, reduceMotion) {
+        derivedStateOf { if (reduceMotion) 1f else progressFraction() }
+    }
     val spec = AnimatedTextSpec(
         text = text,
         fontRegistry = fontRegistry,

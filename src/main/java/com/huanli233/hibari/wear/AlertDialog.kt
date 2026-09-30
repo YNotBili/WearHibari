@@ -24,7 +24,6 @@ import com.huanli233.hibari.runtime.remember
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.geometry.CircleShape
 import com.huanli233.hibari.ui.geometry.RectangleShape
-import com.huanli233.hibari.ui.geometry.Shape
 import com.huanli233.hibari.ui.graphics.Color
 import com.huanli233.hibari.ui.layout.Alignment
 import com.huanli233.hibari.ui.layout.Arrangement
@@ -35,14 +34,11 @@ import com.huanli233.hibari.ui.unit.DpSize
 import com.huanli233.hibari.ui.unit.PaddingValues
 import com.huanli233.hibari.ui.unit.dp
 import com.huanli233.hibari.ui.uniqueKey
-import com.huanli233.hibari.wear.attributes.clickable
 import com.huanli233.hibari.wear.attributes.container
 import com.huanli233.hibari.wear.lazy.ListTransformParams
 import com.huanli233.hibari.wear.lazy.ScalingLazyColumn
 import com.huanli233.hibari.wear.lazy.ScalingLazyListState
 import com.huanli233.hibari.wear.tokens.ColorSchemeKeyTokens
-import com.huanli233.hibari.wear.tokens.FilledIconButtonTokens
-import com.huanli233.hibari.wear.tokens.FilledTonalIconButtonTokens
 import kotlin.math.ceil
 
 /**
@@ -99,6 +95,19 @@ import kotlin.math.ceil
  *    button's own top and bottom `EdgeButtonVerticalPadding` (view/WearEdgeButtonView.kt:186-194) —
  *    and a caller that passes a slot of a different size gets a different bottom inset than
  *    upstream's measurement would have produced.
+ *  - [AlertDialogDefaults.ConfirmButton] and [AlertDialogDefaults.DismissButton] are now the
+ *    `FilledIconButton` (`material3/AlertDialog.kt:1270`) and `FilledTonalIconButton` (`:1318`) calls
+ *    upstream writes, with its shapes (`:1279`, `:1322`), its size and rotation chain
+ *    (`:1276-1277`, `:1320`), its 61.dp outer box (`:1317`) and its content `Row` — the padded,
+ *    centred one of `:1281-1294` and the bare one of `:1324`. Three things riding those chains
+ *    cannot be expressed here: the `interactionSource` remembered at `:1268` and passed at `:1272`
+ *    (no indication system; whatever press feedback the button has is [FilledIconButton]'s own,
+ *    documented there, and the ripple of `material3/IconButton.kt:209` goes with it); the
+ *    `Modifier.onVisibilityChanged(minFractionVisible = 0.9f)` of `:1275`, whose `buttonVisible`
+ *    (`:1269`) upstream writes and never reads, so nothing downstream is lost and Views has no
+ *    subtree-visibility callback to hang it on; and the `semantics` wrapper of the confirm button's
+ *    `Row` (`:1283-1291`), which is the semantics gap below. Upstream's `AlertDialog.kt` carries no
+ *    `testTag` anywhere, so there is none to drop here either.
  *  - Semantics (`semantics(mergeDescendants)`, `Role.Button`, `clearAndSetSemantics`) are dropped:
  *    hibari-wear has no semantics layer yet.
  */
@@ -798,95 +807,116 @@ object AlertDialogDefaults {
     /** The icon size upstream sets on `ConfirmIcon` / `DismissIcon`. */
     val IconSize: Dp = 28.dp
 
-    /** `confirmWidth`, `confirmHeight` and the -45° the confirm button is rotated by. */
+    /**
+     * Upstream's function-locals `confirmWidth` and `confirmHeight` (`material3/AlertDialog.kt:1265,
+     * :1266`) and the `-45f` of its `Modifier.rotate(-45f)` (`:1276`), exposed because a `@Tunable`
+     * default expression cannot reach a local of a body.
+     */
     val ConfirmButtonWidth: Dp = 63.dp
     val ConfirmButtonHeight: Dp = 54.dp
     const val ConfirmButtonRotation: Float = -45f
 
-    /** `dismissSize`, and the 1.dp `cancelButtonPadding` the dismiss button's outer box adds. */
+    /**
+     * `dismissSize` (`material3/AlertDialog.kt:1315`) and the 1.dp `cancelButtonPadding` (`:1470`)
+     * that the outer box of `:1317` adds to it.
+     */
     val DismissButtonSize: Dp = 60.dp
     val DismissButtonPadding: Dp = 1.dp
 
     /**
-     * Default composable for the confirm button.
+     * Default composable for the confirm button: upstream's `FilledIconButton`
+     * (`material3/AlertDialog.kt:1270-1296`), circular through
+     * `IconButtonDefaults.shapes(confirmShape)` with `confirmShape = CircleShape` (`:1267, :1279`),
+     * rotated -45° and fixed at 63 x 54.dp inside the caller's chain (`:1276-1277`), with the padded
+     * centred `Row` upstream gives it as content (`:1281-1294`).
      *
-     * Upstream builds it from `FilledIconButton` with `IconButtonColors`; this module's
-     * [FilledIconButton] exists but is not adopted for this slot — the two live colour roles are
-     * resolved into [AlertDialogButtonColors] and the circle is drawn by [ContainerSpec]. Folding
-     * the slot onto [FilledIconButton] is an integration-pass question, not a missing type.
-     * `interactionSource` and the `semantics` wrapper (`mergeDescendants`, `onClick`, `Role.Button`)
-     * go with those upstream types. `onVisibilityChanged` is dropped: upstream stores its result in
-     * `buttonVisible` and never reads it. Also dropped are `minimumInteractiveComponentSize()`
-     * (48.dp) and the `size` of `IconButtonTokens`'s `ContainerDefaultSize` (52.dp) that upstream's
-     * icon buttons apply *inside* the caller's chain: this slot's own 63×54.dp `size` is outermost
-     * and pins the constraints, so both are no-ops there and here.
+     * What is not there is what the file header lists for these two slots: `interactionSource`
+     * (`:1268, :1272`), `onVisibilityChanged` (`:1275`) and the `semantics` wrapper of the content
+     * `Row` (`:1283-1291`). The 10.dp padding stays a literal, as upstream writes it.
+     *
+     * Upstream's own `.size(confirmWidth, confirmHeight)` wins over `FilledIconButton`'s inner
+     * `minimumInteractiveComponentSize()` and `size(IconButtonDefaults.DefaultButtonSize)`
+     * (`material3/IconButton.kt:198-201`) because the caller's chain is outermost there and the inner
+     * size is coerced; [FilledIconButton] reproduces that precedence by putting its own default first
+     * and the caller's chain after it (`IconButton.kt:168-169`), so the same 63 x 54.dp lands.
+     *
+     * The one geometry difference is not this slot's: our `CircleShape` rounds a non-square box by
+     * `min(width, height) / 2` — a 63 x 54.dp stadium — where Compose's `CircleShape` traces an oval
+     * (`hibari-ui/src/main/java/com/huanli233/hibari/ui/geometry/Shape.kt:64-69`). The stand-in this
+     * call replaced had the same primitive, so the fold changes nothing there.
      *
      * `content` has no default because upstream's is `ConfirmIcon`, which draws `Icons.Check` out of
      * the Material icon pack and no drawable id may be invented here — pass [ConfirmIcon] to keep
      * the 28.dp slot.
+     *
+     * @param colors upstream's `IconButtonColors = IconButtonDefaults.filledIconButtonColors()`
+     *   (`:1262`, `material3/IconButton.kt:512-513`), defaulted to `null` and resolved in the body
+     *   because a `@Tunable` default expression may not call a `@Tunable`.
      */
     @Tunable
     fun ConfirmButton(
         onClick: () -> Unit,
         modifier: Modifier = Modifier,
-        colors: AlertDialogButtonColors? = null,
+        colors: IconButtonColors? = null,
         content: (@Tunable RowScope.() -> Unit)? = null,
     ) {
-        val resolved = colors ?: confirmButtonColors()
+        val resolved = colors ?: IconButtonDefaults.filledIconButtonColors()
         val slot = content
-        // A Column, not the icon button's Box: the centring of its single Row is what group alignment
-        // is for, and only a linear host can do it in Views.
-        Column(
+        FilledIconButton(
+            onClick = onClick,
             modifier = modifier
-                .container(resolved.containerSpec(CircleShape))
-                .clickable(enabled = true, onClick = onClick)
                 .dialogRotation(ConfirmButtonRotation)
-                .size(DpSize(ConfirmButtonWidth, ConfirmButtonHeight))
-                .dialogChildGravity(Gravity.CENTER),
+                .size(DpSize(ConfirmButtonWidth, ConfirmButtonHeight)),
+            shapes = IconButtonDefaults.shapes(CircleShape),
+            colors = resolved,
         ) {
-            // Upstream's `LocalContentColor provides colors.contentColor(enabled = true)`.
-            provideContentColor(resolved.contentColor) {
-                Row(
-                    modifier = Modifier
-                        .padding(10.dp)
-                        .dialogChildGravity(Gravity.CENTER_VERTICAL),
-                    content = { slot?.invoke(this) },
-                )
-            }
+            // Upstream's `Row(modifier = Modifier.align(Alignment.Center).padding(10.dp))`. The
+            // centring is written by upstream and is a no-op in both directions: the Row wraps its
+            // content, and the box it sits in wraps the Row.
+            Row(
+                modifier = Modifier
+                    .gravity(Gravity.CENTER)
+                    .padding(10.dp),
+                content = { slot?.invoke(this) },
+            )
         }
     }
 
     /**
-     * Default composable for the dismiss button: a 60.dp `shapes.medium` square aligned to the
-     * bottom end of a 61.dp box, which is exactly how upstream sizes it. See [ConfirmButton] for
-     * why the icon-button types are not adopted.
+     * Default composable for the dismiss button: upstream's `FilledTonalIconButton`
+     * (`material3/AlertDialog.kt:1318-1325`) — a `shapes.medium` square (`:1316, :1322`) at 60.dp,
+     * aligned to the bottom end of the 61.dp box of `:1317`, with the caller's `modifier` inside that
+     * box and not on it, exactly as upstream threads it (`:1320`). The bare `Row(content = content)`
+     * of `:1324` is the content.
+     *
+     * See [ConfirmButton] for the three dropped upstream arguments and why.
+     *
+     * @param colors upstream's `IconButtonColors = IconButtonDefaults.filledTonalIconButtonColors()`
+     *   (`:1312`, `material3/IconButton.kt:595-596`), `null` and resolved in the body for the same
+     *   hoisting reason.
      */
     @Tunable
     fun DismissButton(
         onClick: () -> Unit,
         modifier: Modifier = Modifier,
-        colors: AlertDialogButtonColors? = null,
+        colors: IconButtonColors? = null,
         content: (@Tunable RowScope.() -> Unit)? = null,
     ) {
-        val resolved = colors ?: dismissButtonColors()
+        val resolved = colors ?: IconButtonDefaults.filledTonalIconButtonColors()
         val slot = content
         val outerSize = DismissButtonSize + DismissButtonPadding
         Box(modifier = Modifier.size(DpSize(outerSize, outerSize))) {
-            Column(
+            FilledTonalIconButton(
+                onClick = onClick,
                 modifier = modifier
                     .size(DpSize(DismissButtonSize, DismissButtonSize))
-                    .gravity(Gravity.BOTTOM or Gravity.END)
-                    .container(resolved.containerSpec(MaterialTheme.shapes.medium))
-                    .clickable(enabled = true, onClick = onClick)
-                    .dialogChildGravity(Gravity.CENTER),
-            ) {
-                // Upstream's `Row(content = content)`: the slot is a `RowScope` lambda, so the button's
-                // box has to hand it a row. The row is scoped to the button's content colour, as
-                // `FilledTonalIconButton` does.
-                provideContentColor(resolved.contentColor) {
+                    .gravity(Gravity.BOTTOM or Gravity.END),
+                shapes = IconButtonDefaults.shapes(MaterialTheme.shapes.medium),
+                colors = resolved,
+                content = {
                     Row(content = { slot?.invoke(this) })
-                }
-            }
+                },
+            )
         }
     }
 
@@ -1023,45 +1053,10 @@ object AlertDialogDefaults {
         Spacer(Modifier.height(GroupSeparatorHeight))
     }
 
-    /** `ButtonDefaults.filledIconButtonColors()`, reduced to the two roles this slot paints. */
-    @Tunable
-    fun confirmButtonColors(): AlertDialogButtonColors {
-        val scheme = MaterialTheme.colorScheme
-        return AlertDialogButtonColors(
-            containerColor = FilledIconButtonTokens.ContainerColor.resolve(scheme),
-            contentColor = FilledIconButtonTokens.ContentColor.resolve(scheme),
-        )
-    }
-
-    /** `IconButtonDefaults.filledTonalIconButtonColors()`, same reduction. */
-    @Tunable
-    fun dismissButtonColors(): AlertDialogButtonColors {
-        val scheme = MaterialTheme.colorScheme
-        return AlertDialogButtonColors(
-            containerColor = FilledTonalIconButtonTokens.ContainerColor.resolve(scheme),
-            contentColor = FilledTonalIconButtonTokens.ContentColor.resolve(scheme),
-        )
-    }
-
     // Upstream keeps these three on `AlertDialogDefaults` as internal members.
     private const val IconTopPaddingFraction = 0.012f
     private const val NoEdgeButtonBottomPaddingFraction = 0.3646f
     private val GroupSeparatorHeight: Dp = 8.dp
-}
-
-/**
- * The two colour roles an [AlertDialog] button paints.
- *
- * Upstream types both button slots as `IconButtonColors`, which also carries pressed and disabled
- * variants resolved from an `interactionSource`; the alert's buttons are never disabled and there is
- * no interaction source here, so only the two live roles travel.
- */
-data class AlertDialogButtonColors(
-    val containerColor: Color,
-    val contentColor: Color,
-) {
-    fun containerSpec(shape: Shape): ContainerSpec =
-        ContainerSpec(shape = shape, containerColor = containerColor)
 }
 
 /**

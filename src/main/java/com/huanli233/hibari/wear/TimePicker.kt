@@ -17,6 +17,7 @@ import android.text.format.DateFormat
 import android.view.Gravity
 import android.view.View
 import android.view.accessibility.AccessibilityManager
+import androidx.annotation.PluralsRes
 import androidx.annotation.RequiresApi
 import com.huanli233.hibari.animation.Animatable
 import com.huanli233.hibari.foundation.Box
@@ -122,11 +123,14 @@ import kotlin.math.ceil
  *    local: every text this component draws converts sp through density only, ignoring
  *    `Configuration.fontScale`, which is exactly what upstream's
  *    `LocalDensity provides Density(density, fontScale = 1f)` does for the whole subtree.
- *  - Strings and plurals (`:222-225`, `:1184-1193`): this module ships no resources, so the five
- *    labels and the three content-description plurals are the English values of
- *    `res/values/wear_m3c_strings.xml:3-13,22-32`, exposed as [TimePickerDefaults] members. They are
- *    not localized, and the plural rule is English's (`one` at 1) rather than
- *    `Resources.getQuantityString`'s per-locale selection.
+ *  - Strings and plurals (`:218-222`, `:224-250`, `:1184-1195`): the five labels, the instruction
+ *    heading, the confirm-button description and the three content-description plurals are read from
+ *    this module's `res/values/strings.xml` / `res/values/plurals.xml` under upstream's `wear_m3c_*`
+ *    keys — `context.getString(R.string.*)` for the labels and the heading, and
+ *    `Resources.getQuantityString(R.plurals.*, value, value)` inside [timePickerCreateDescription],
+ *    which is what upstream's `getString(Strings.*)` / `createDescription` do, so the plural category
+ *    is chosen per locale. A `@Tunable` default expression may not read the context, so each string is
+ *    resolved in the body, where `currentContext` is already in scope.
  *
  * @param initialTime The initial time to be displayed in the TimePicker.
  * @param onTimePicked The callback that is called when the user confirms the time selection. It
@@ -214,36 +218,44 @@ fun TimePicker(
         null
     }
 
+    // Upstream's `getString(Strings.*)` (`:218-222`). A `@Tunable` default expression may not read the
+    // context, so the labels and the heading are resolved here, where `currentContext` is already held.
+    val instructionHeadingString = context.getString(R.string.wear_m3c_time_picker_heading)
+    val hourString = context.getString(R.string.wear_m3c_time_picker_hour)
+    val minuteString = context.getString(R.string.wear_m3c_time_picker_minute)
+    val secondString = context.getString(R.string.wear_m3c_time_picker_second)
+    val periodString = context.getString(R.string.wear_m3c_time_picker_period)
+
     val hoursContentDescription = {
         timePickerCreateDescription(
+            context,
             selectedElement,
             hourState?.run { selectedOptionIndex + localeConfig.hourValueOffset } ?: 0,
-            TimePickerDefaults.hourText,
-            TimePickerDefaults.hoursUnit,
-            locale,
+            hourString,
+            R.plurals.wear_m3c_time_picker_hours_content_description,
         )
     }
     val minutesContentDescription = {
         timePickerCreateDescription(
+            context,
             selectedElement,
             minuteState.selectedOptionIndex,
-            TimePickerDefaults.minuteText,
-            TimePickerDefaults.minutesUnit,
-            locale,
+            minuteString,
+            R.plurals.wear_m3c_time_picker_minutes_content_description,
         )
     }
     val secondsContentDescription = {
         timePickerCreateDescription(
+            context,
             selectedElement,
             secondState?.selectedOptionIndex ?: 0,
-            TimePickerDefaults.secondText,
-            TimePickerDefaults.secondsUnit,
-            locale,
+            secondString,
+            R.plurals.wear_m3c_time_picker_seconds_content_description,
         )
     }
     val periodContentDescription = {
         if (selectedElement == TimePickerSelection.None) {
-            TimePickerDefaults.periodText
+            periodString
         } else if (periodState?.selectedOptionIndex == 0) {
             localeConfig.localizedAmText
         } else {
@@ -291,11 +303,11 @@ fun TimePicker(
 
             val layoutConfig = timePickerLayoutConfig(type, localeConfig)
             val heading = when (selectedElement) {
-                TimePickerSelection.Hour -> TimePickerDefaults.hourText
-                TimePickerSelection.Minute -> TimePickerDefaults.minuteText
-                TimePickerSelection.Second -> TimePickerDefaults.secondText
+                TimePickerSelection.Hour -> hourString
+                TimePickerSelection.Minute -> minuteString
+                TimePickerSelection.Second -> secondString
                 TimePickerSelection.None ->
-                    if (touchExplorationServicesEnabled) TimePickerDefaults.headingText else ""
+                    if (touchExplorationServicesEnabled) instructionHeadingString else ""
                 else -> null
             }
 
@@ -374,7 +386,9 @@ fun TimePicker(
             ) {
                 Icon(
                     image = checkIcon,
-                    contentDescription = TimePickerDefaults.confirmButtonContentDescription,
+                    contentDescription = context.getString(
+                        R.string.wear_m3c_picker_confirm_button_content_description,
+                    ),
                     modifier = Modifier.size(DpSize(TimePickerIconSize, TimePickerIconSize)),
                     tint = pickerColors.confirmButtonContentColor,
                 )
@@ -553,37 +567,11 @@ object TimePickerDefaults {
             confirmButtonContainerColor = confirmButtonContainerColor,
         )
 
-    /**
-     * `R.string.wear_m3c_time_picker_heading` (`res/values/wear_m3c_strings.xml:7`), shown while no
-     * column is selected. See the note on [TimePicker]: this module ships no resources, so the
-     * English value is carried as text and is not translated.
-     */
-    val headingText: String = "Scroll to set time"
-
-    /** `R.string.wear_m3c_time_picker_hour` (`wear_m3c_strings.xml:3`). */
-    val hourText: String = "Hour"
-
-    /** `R.string.wear_m3c_time_picker_minute` (`wear_m3c_strings.xml:4`). */
-    val minuteText: String = "Minute"
-
-    /** `R.string.wear_m3c_time_picker_second` (`wear_m3c_strings.xml:5`). */
-    val secondText: String = "Second"
-
-    /** `R.string.wear_m3c_time_picker_period` (`wear_m3c_strings.xml:6`). */
-    val periodText: String = "Period"
-
-    /** `R.string.wear_m3c_picker_confirm_button_content_description` (`wear_m3c_strings.xml:13`). */
-    val confirmButtonContentDescription: String = "Confirm"
-
-    /** The noun of `Plurals.TimePickerHoursContentDescription` (`wear_m3c_strings.xml:22-25`). */
-    val hoursUnit: String = "hour"
-
-    /** The noun of `Plurals.TimePickerMinutesContentDescription` (`wear_m3c_strings.xml:26-29`). */
-    val minutesUnit: String = "minute"
-
-    /** The noun of `Plurals.TimePickerSecondsContentDescription` (`wear_m3c_strings.xml:30-33`). */
-    val secondsUnit: String = "second"
-
+    // Upstream's `TimePickerDefaults` (`:549-573`) carries no string members: the labels, the heading,
+    // the confirm-button description and the plural content descriptions are read from resources in the
+    // component body (`getString(Strings.*)` / `createDescription`, `:218-222`, `:224-250`,
+    // `:1184-1195`), so this port reads the same `R.string.wear_m3c_*` / `R.plurals.wear_m3c_*` keys
+    // from [TimePicker] rather than exposing text here.
     private val ColorScheme.defaultTimePickerColors: TimePickerColors
         get() = TimePickerColors(
             selectedPickerContentColor = TimePickerTokens.SelectedContentColor.resolve(this),
@@ -1197,23 +1185,24 @@ private fun timePickerCalculateBaseline(
 }
 
 /**
- * `createDescription` (`material3/TimePicker.kt:1184-1193`) without the `Context`: upstream's
- * `resources.getQuantityString(plurals, value, value)` is the per-locale plural selection this
- * module cannot reach, so the rule is English's — `one` at exactly 1 — and the digits are formatted
- * for [locale] the way the option text is. See the note on [TimePicker].
+ * `createDescription` (`material3/TimePicker.kt:1184-1195`): the bare [label] while no column is
+ * selected, otherwise the plural [plurals] resolved for `selectedValue` through
+ * `Resources.getQuantityString(plurals, value, value)` — the per-locale plural selection upstream
+ * performs, so `wear_m3c_time_picker_{hours,minutes,seconds}_content_description` picks its own
+ * `one`/`other` form rather than this module applying English's `one`-at-1 rule. Upstream hands in its
+ * `Plurals` value class; Hibari has no such type, so the `@PluralsRes` id is passed directly. See the
+ * note on [TimePicker].
  */
 private fun timePickerCreateDescription(
+    context: Context,
     selectedElement: TimePickerSelection,
     selectedValue: Int,
     label: String,
-    unit: String,
-    locale: Locale,
+    @PluralsRes plurals: Int,
 ): String = if (selectedElement == TimePickerSelection.None) {
     label
-} else if (selectedValue == 1) {
-    "%d $unit".format(locale, selectedValue)
 } else {
-    "%d ${unit}s".format(locale, selectedValue)
+    context.resources.getQuantityString(plurals, selectedValue, selectedValue)
 }
 
 /**
@@ -1512,8 +1501,8 @@ private fun isTimePickerTouchExplorationEnabled(context: Context): Boolean {
 
 /**
  * Upstream's `Icons.Check` (`internal/Icons.kt:95-124`) as a [Drawable]: `Icon` can only tint what
- * the framework hands back, and this module ships no resources, so the one glyph [TimePicker] needs
- * is drawn from the same path data on a 960-unit viewport
+ * the framework hands back, and this module ships no drawable resources, so the one glyph [TimePicker]
+ * needs is drawn from the same path data on a 960-unit viewport
  * (`internal/Icons.kt:222-223`). The colour is carried by the drawable rather than by the
  * `ImageView`'s colour filter, which a hand-built [Drawable] would ignore.
  */

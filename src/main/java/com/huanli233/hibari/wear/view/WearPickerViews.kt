@@ -133,9 +133,14 @@ internal data class PickerGroupProps(
  *    accessibility *action label* — `getString(Strings.PickerClickToAdjustHint)` while read-only and
  *    `getString(Strings.PickerClickToSelectHint)` otherwise, i.e.
  *    `R.string.wear_m3c_picker_click_to_adjust_hint` / `..._select_hint` (`internal/Strings.kt`,
- *    referenced from `Picker.kt`) — which a framework `AccessibilityNodeInfo` cannot carry. The
- *    description and the scroll actions are ported; the label degrades to [View.isClickable]'s
- *    generic click action. The hint *text* is not in the reference tree, so nothing here asserts it.
+ *    referenced from `Picker.kt`) — and the framework *can* carry one, through
+ *    `AccessibilityNodeInfo.AccessibilityAction(id, label)` added in
+ *    `onInitializeAccessibilityNodeInfo`. What this port has no answer for is the id: how Compose picks
+ *    one is not visible in the reference tree (compose-ui is absent), and an id chosen here would have
+ *    to avoid the framework's own action ids by guesswork. So the label degrades to
+ *    [View.isClickable]'s generic click action, and the two hint strings ("Adjust the value" /
+ *    "Select the value", `res/values/wear_m3c_strings.xml:12-13`) are deliberately left undeclared
+ *    rather than declared with no consumer. The description and the scroll actions are ported.
  *  - Upstream's `semantics { scrollToIndex { state.scrollToOption(it); onSelected() } }` is **not**
  *    ported, and cannot be: it reaches TalkBack as `ACTION_SCROLL_TO_POSITION` with an item-index
  *    argument, which exist only on `AccessibilityNodeInfoCompat`, and a framework `View` exposes

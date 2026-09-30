@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Accessibility plurals for the hibari-wear TimePicker, declared with the resource keys and default
+  English quantities of the reference tree's
+  app-new/src/main/res/values/wear_m3c_strings.xml:22-33 (reached through
+  androidx/wear/compose/material3/internal/Strings.kt Plurals.TimePicker{Hours,Minutes,Seconds}ContentDescription).
+  Read with Resources.getQuantityString so the plural category is chosen per locale, exactly as
+  upstream's createDescription does, instead of a hardcoded English `one`-at-1 rule.
+-->
+<resources>
+    <plurals name="wear_m3c_time_picker_hours_content_description">
+        <item quantity="one">%d hour</item>
+        <item quantity="other">%d hours</item>
+    </plurals>
+    <plurals name="wear_m3c_time_picker_minutes_content_description">
+        <item quantity="one">%d minute</item>
+        <item quantity="other">%d minutes</item>
+    </plurals>
+    <plurals name="wear_m3c_time_picker_seconds_content_description">
+        <item quantity="one">%d second</item>
+        <item quantity="other">%d seconds</item>
+    </plurals>
+</resources>

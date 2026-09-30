@@ -104,10 +104,10 @@ import kotlin.text.format
  * [rememberPickerState] hands a [PickerState] to a [Picker].
  *
  * No type here is invented: every declaration in this file exists in the reference tree with the
- * line number cited. The additions are the seven string members on [DatePickerDefaults] (this
- * module ships no resources — see the note in [DatePicker]), the private [DatePickerOptionSpec]
- * that carries what upstream keeps as locals of the composable body, and the visibility changes and
- * hoisted-default workarounds the component's own KDoc lists.
+ * line number cited. The additions are the private [DatePickerOptionSpec] that carries what upstream
+ * keeps as locals of the composable body, and the visibility changes and hoisted-default workarounds
+ * the component's own KDoc lists. Its accessibility strings are no longer an addition: they are read
+ * from this module's `res/values/strings.xml` under upstream's `wear_m3c_*` keys.
  *
  * Not ported, with the upstream range and the reason:
  *  - `DatePickerDialog`, `WeekDatePicker`, `YearRoundDatePicker`, `YearListDatePicker`,
@@ -177,10 +177,12 @@ import kotlin.text.format
  *    the focus site that carries the rotary stream.
  *  - `FadeLabel` (:285-301) cross-fades the heading when the text changes; see the file comment. The
  *    label's `semantics(mergeDescendants = true) { heading() }` (:296) has no Hibari equivalent.
- *  - Strings (:168-172): this module ships no resources, so the four labels, the instruction heading,
- *    the `"%1$s, %2$d"` content-description template and the two button descriptions are the English
- *    values of `res/values/wear_m3c_strings.xml:8-15,34`, exposed as [DatePickerDefaults] members.
- *    They are not localised.
+ *  - Strings (:168-172): the four labels, the instruction heading, the `"%1$s, %2$d"` content-description
+ *    template and the two button descriptions are read from this module's `res/values/strings.xml`
+ *    under upstream's `wear_m3c_*` keys — `context.getString(R.string.*)` in the body, as upstream's
+ *    `getString(Strings.*)` does. A `@Tunable` default expression may not read the context, so each is
+ *    resolved where `currentContext` is already held; [DatePickerDefaults] carries no string members,
+ *    exactly like upstream.
  *  - `val boxConstraints = this` (:263) is upstream's unused capture of `BoxWithConstraints`; it
  *    disappears with the constraints receiver.
  *
@@ -247,10 +249,13 @@ public fun DatePicker(
         else DatePickerTokens.ContentTypography,
     ).copy(fontFeatureSettings = "tnum")
 
-    val yearString = DatePickerDefaults.yearText
-    val monthString = DatePickerDefaults.monthText
-    val dayString = DatePickerDefaults.dayText
-    val contentDescriptionTemplate = DatePickerDefaults.contentDescriptionTemplate
+    // Upstream's `getString(Strings.*)` (:168-172): the four labels and the content-description
+    // template, read in the body because a `@Tunable` default expression may not touch the context.
+    val yearString = context.getString(R.string.wear_m3c_date_picker_year)
+    val monthString = context.getString(R.string.wear_m3c_date_picker_month)
+    val dayString = context.getString(R.string.wear_m3c_date_picker_day)
+    val contentDescriptionTemplate =
+        context.getString(R.string.wear_m3c_date_picker_content_description)
 
     val focusRequesterConfirmButton = remember { HierarchicalFocusRequester() }
 
@@ -346,7 +351,11 @@ public fun DatePicker(
                     DatePickerOption.Year -> yearString
                     else -> ""
                 }
-            } ?: if (touchExplorationServicesEnabled) DatePickerDefaults.headingText else ""
+            } ?: if (touchExplorationServicesEnabled) {
+                context.getString(R.string.wear_m3c_date_picker_heading)
+            } else {
+                ""
+            }
 
         // Allow more room for the initial instruction heading under TalkBck (:274-278).
         val maxTextLines = if (selectedIndex == null) 2 else 1
@@ -475,11 +484,15 @@ public fun DatePicker(
                 ) {
                     Icon(
                         image = if (showConfirm) confirmIcon else nextIcon,
+                        // Upstream's `getString(Strings.Picker{Confirm,Next}ButtonContentDescription)`
+                        // (:567, :570).
                         contentDescription = if (showConfirm) {
-                            DatePickerDefaults.confirmButtonContentDescription
+                            context.getString(
+                                R.string.wear_m3c_picker_confirm_button_content_description,
+                            )
                         } else {
                             // If none is selected, return the 'next' content description.
-                            DatePickerDefaults.nextButtonContentDescription
+                            context.getString(R.string.wear_m3c_picker_next_button_content_description)
                         },
                         modifier = Modifier.size(DpSize(DatePickerIconSize, DatePickerIconSize)),
                         // Upstream's `Icon` tints an `ImageVector`; these hand-built drawables carry
@@ -933,7 +946,7 @@ private fun Modifier.datePickerText(spec: TimePickerTextSpec): Modifier =
 
 /**
  * Upstream's `Icons.Check` (:561) and `Icons.AutoMirrored.KeyboardArrowRight` (:563) as one
- * [Drawable]: `Icon` can only tint what the framework hands back, and this module ships no
+ * [Drawable]: `Icon` can only tint what the framework hands back, and this module ships no drawable
  * resources, so the two glyphs are drawn from the same path data on a 960-unit viewport
  * (`internal/Icons.kt:95-122` and `:168-194`). The colour is carried by the drawable rather than by
  * the `ImageView`'s colour filter, which a hand-built [Drawable] would ignore.
@@ -1147,40 +1160,11 @@ public object DatePickerDefaults {
 
     private var defaultDatePickerColorsCached: DatePickerColors? = null
 
-    /**
-     * `R.string.wear_m3c_date_picker_heading` (`res/values/wear_m3c_strings.xml:11`), shown while no
-     * column is selected under TalkBack (`DatePicker.kt:168, :272`). This module ships no resources,
-     * so the English value is carried as text and is not translated — the same reduction
-     * [TimePickerDefaults.headingText] documents.
-     */
-    public val headingText: String = "Scroll to set date"
-
-    /** `R.string.wear_m3c_date_picker_day` (`wear_m3c_strings.xml:8`), read at `DatePicker.kt:171`. */
-    public val dayText: String = "Day"
-
-    /** `R.string.wear_m3c_date_picker_month` (`wear_m3c_strings.xml:9`), read at `DatePicker.kt:170`. */
-    public val monthText: String = "Month"
-
-    /** `R.string.wear_m3c_date_picker_year` (`wear_m3c_strings.xml:10`), read at `DatePicker.kt:169`. */
-    public val yearText: String = "Year"
-
-    /**
-     * `R.string.wear_m3c_date_picker_content_description` (`wear_m3c_strings.xml:34`), the template
-     * [createDescriptionDatePicker] formats the day and year descriptions with (`DatePicker.kt:172`).
-     */
-    public val contentDescriptionTemplate: String = "%1\$s, %2\$d"
-
-    /**
-     * `R.string.wear_m3c_picker_confirm_button_content_description` (`wear_m3c_strings.xml:14`), on
-     * the confirm button once the last column has been stepped through (`DatePicker.kt:567`).
-     */
-    public val confirmButtonContentDescription: String = "Confirm"
-
-    /**
-     * `R.string.wear_m3c_picker_next_button_content_description` (`wear_m3c_strings.xml:15`), while
-     * the button is still advancing through the columns (`DatePicker.kt:570`).
-     */
-    public val nextButtonContentDescription: String = "Next"
+    // Upstream's `DatePickerDefaults` (:605-682) exposes no string members: the four labels, the
+    // instruction heading, the `"%1$s, %2$d"` content-description template and the two button
+    // descriptions are read from resources in the component body (`getString(Strings.*)`, :168-172),
+    // so this port reads the same `R.string.wear_m3c_*` keys from [DatePicker] rather than holding text
+    // here.
 }
 
 /**

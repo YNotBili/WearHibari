@@ -96,10 +96,9 @@ import kotlinx.coroutines.delay
  *
  * All five are gone from those files, and both `animatedDelay` consumers now call this pair:
  * `ConfirmationDialog.kt:238`/`:244`, `:336`/`:338`, `:409`/`:411`, `:603`/`:605`, `:651`/`:653`, and
- * `OpenOnPhoneDialog.kt:155` with `:173`. Two log lines elsewhere are now stale and were not edited
- * here: `AnimatedText.kt:67` says `LocalReduceMotion` "has no Hibari counterpart" and
- * `Dialog.kt:76` calls it "also unported" — neither has a *local*, but both now have a source, so
- * `AnimatedText`'s reduce-motion branch is no longer blocked on anything.
+ * `OpenOnPhoneDialog.kt:155` with `:173`. The two notes this left behind have since been corrected:
+ * `AnimatedText.kt` now ports upstream's reduce-motion branch on top of [wearReduceMotionEnabled], and
+ * `Dialog.kt` records that what is missing there is the offset-driven background scale, not the setting.
  */
 
 /**
