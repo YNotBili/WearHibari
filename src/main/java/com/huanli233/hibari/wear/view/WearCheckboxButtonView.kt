@@ -27,14 +27,15 @@ private const val CheckboxButtonCanvasSizeDp = 24f
  * `DrawScope.animateTick` and its private `drawTick`/`eraseTick` in `material3/AnimateTick.kt`.
  * Every coordinate is the upstream literal.
  *
- * Why this is a [WearSelectionView] subclass rather than [WearCheckboxView]:
- *  - upstream hands the control **two** resolvers, `boxColor` and `checkmarkColor`, and they are
- *    different tokens (`Primary` on `PrimaryContainer`); [WearCheckboxView] draws box and tick from
- *    one inherited `controlColor`.
- *  - the tick has two branches: it is *drawn* forward while `checked` and *erased* backwards from
- *    (16.5, 9.0) while not, which is what makes an un-tap read as an un-tick. [WearCheckboxView]
- *    runs the draw geometry backwards instead.
- *  - a disabled tick is composited in hardlight, per upstream's `blendMode` argument.
+ * Why this is not [WearCheckboxView], which now carries a checkmark slot of its own:
+ *  - upstream hands **this** control two resolvers resolved from material3's row tokens
+ *    (`Primary` box on a `PrimaryContainer` checkmark), while the bare v1 `Checkbox` resolves its own pair
+ *    (`ToggleControl.kt:69-80`);
+ *  - the row's tick is `material3/AnimateTick.kt`'s fork — 2.5.dp and 6.dp components from (7.4, 13.0) and
+ *    (10.5, 15.1), rotating on a `progress^3` ease with round caps — where v1's grows 4.dp and 8.dp from
+ *    (6.7, 12.3) and (9.3, 16.3) under a linear rotation with butt caps, and the two forks also erase from
+ *    different points;
+ *  - the row's box fades an outline out under a fill fading in, which v1's `drawBox` does not draw at all.
  *
  * Colour animation: upstream runs `progress` on `fastEffectsSpec()` and each colour on
  * `slowEffectsSpec()` through `animateSelectionColor`, so the tick fades between

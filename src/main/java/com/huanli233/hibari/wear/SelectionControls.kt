@@ -12,7 +12,6 @@ import com.huanli233.hibari.wear.tokens.CheckboxButtonTokens
 import com.huanli233.hibari.wear.tokens.RadioButtonTokens
 import com.huanli233.hibari.wear.view.WearCheckboxView
 import com.huanli233.hibari.wear.view.WearRadioView
-import com.huanli233.hibari.wear.view.WearSelectionView
 import com.huanli233.hibari.wear.view.WearSwitchView
 
 /**
@@ -39,30 +38,26 @@ import com.huanli233.hibari.wear.view.WearSwitchView
  * radio keeps [BareRadioButtonColors] and [BareRadioButtonDefaults]. [RadioButton] itself did not need a
  * prefix: its signature and the row's are disjoint (see below).
  *
- * **Colour-role gap.** v1's three colour types are `@Stable interface`s of two `@Composable
+ * **Colour roles.** v1's three colour types are `@Stable interface`s of two `@Composable
  * (enabled, checked) -> State<Color>` roles each — `boxColor`/`checkmarkColor` (`:199`),
  * `thumbColor`/`trackColor` (`:221`), `ringColor`/`dotColor` (`:243`) — and each role reads four plain
  * colours through `animateSelectionColor` (`materialcore/SelectionControls.kt:415-432`), so the colour
- * tween runs on its own slow spec beside the shape's fast one. Here they are data classes of plain
- * [Color]s resolved once per tune into the state-selecting function each view's colour slot takes
- * ([CheckboxColors.controlColor], [BareRadioButtonColors.controlColor], and [SwitchColors]'s two roles,
- * named and ordered as v1 names them); the shared views note the lost split-spec colour tween in
- * `view/WearSelectionViews.kt:20-23`. Two role pairs still collapse because those views have fewer
- * slots: the checkbox's tick has no colour of its own — [CheckboxColors.checkedCheckmarkColor] is stored
- * and never read, because `WearSelectionView.controlColor` (`view/WearSelectionViews.kt:54`) paints both
- * the box and the tick (`WearCheckboxView` at `:188`) — and the radio's dot shares the ring's colour
- * (`WearRadioView` at `:211`, the dot then filling with the same paint). Giving each of the two views a
- * second slot is what closes them.
+ * tween runs on its own slow spec beside the shape's fast one. Here they are data classes of the eight plain
+ * [Color]s in upstream's field order, each with the two role selectors named as v1 names them
+ * ([CheckboxColors.boxColor] / [CheckboxColors.checkmarkColor], [SwitchColors.thumbColor] /
+ * [SwitchColors.trackColor], [BareRadioButtonColors.ringColor] / [BareRadioButtonColors.dotColor]), and each
+ * control's view carries a slot per role — what the lost split-spec colour tween is, the shared views note in
+ * `view/WearSelectionViews.kt:20-31`. [BareRadioButtonDefaults] is the one place the two radio roles cannot
+ * differ: v1's own factory gives the dot the same colour as the ring in all four states (`:355-380`).
  *
  * The switch draws v1's geometry: a 24 x 10 dp round-capped track and a 7 dp thumb travelling 7 to 17 dp,
- * with no border ring and no tick ([WearSwitchView], `view/WearSelectionViews.kt:233`, from
- * `ToggleControl.kt:627-629` and its `drawThumb` at `:398-416`, which discards the icon colour it is
- * handed at `:137`). The checkbox's box matches as well (`BOX_SIZE 18` / `BOX_STROKE 2` on a 24 x 24
- * canvas, `:622-625`, `:634-635`), but its tick is material3's fork rather than v1's: v1 grows the two
- * segments from (6.7, 12.3) and (9.3, 16.3) under a linear 15 deg-to-0 rotation, strokes them with
- * `StrokeCap.Butt` and switches to `BlendMode.Hardlight` while disabled
- * (`materialcore/SelectionControls.kt:547-592`, erased on the way out at `:625-662`), where this port
- * starts at (7.4, 13.0), eases the rotation cubically and caps the ends round.
+ * with no border ring and no tick ([WearSwitchView], `view/WearSelectionViews.kt`, from `ToggleControl.kt:627-629`
+ * and its `drawThumb` at `:398-416`, which discards the icon colour it is handed at `:137`). The checkbox
+ * draws v1's too, and the less of it there is: `drawBox` takes no `progress` (`ToggleControl.kt:79`), so
+ * upstream's bare box is a single stroked outline (`BOX_CORNER 3` / `BOX_STROKE 2` / `BOX_RADIUS 2` /
+ * `BOX_SIZE 18`, `:383-397`, `:622-625`) with **no filled state at all** — the fading fill belongs to the
+ * material3 row's own `drawBox`. Its tick is core's `drawTick`/`eraseTick` (`materialcore/SelectionControls.kt:547-592`,
+ * `:625-662`), branched on `checked` rather than on `progress`.
  *
  * Only [RadioButton] still doubles a row name, overloading `RadioButton.kt:92` at a shorter arity: the row
  * requires `onSelect: () -> Unit` (`:94`) and a trailing `label` (`:102`), neither of which this signature
@@ -73,14 +68,30 @@ import com.huanli233.hibari.wear.view.WearSwitchView
  * `interactionSource` is absent from all three; see each function's KDoc for the consequence.
  */
 
-/** [checked] is applied as an animated 0..1 progress, matching `updateTransition(...).animateFloat`. */
-private fun Modifier.selectionControl(
+/**
+ * The bare [Checkbox]'s state and its two v1 roles, keyed as one attribute so a retune diffs atomically.
+ * [enabled] is carried because upstream hands it to the tick, which composites in `BlendMode.Hardlight` while
+ * disabled (`materialcore/SelectionControls.kt:589`, `:659`).
+ */
+private fun Modifier.checkboxControl(
     checked: Boolean,
-    color: Color,
-): Modifier = this.thenViewAttribute<WearSelectionView, Pair<Boolean, Color>>(uniqueKey, checked to color) {
-    controlColor = it.second
-    animateProgressTo(if (it.first) 1f else 0f)
+    enabled: Boolean,
+    boxColor: Color,
+    checkmarkColor: Color,
+): Modifier = this.thenViewAttribute<WearCheckboxView, CheckboxRenderState>(
+    uniqueKey,
+    CheckboxRenderState(checked, enabled, boxColor, checkmarkColor),
+) {
+    setCheckboxState(it.checked, it.enabled, it.box, it.checkmark)
 }
+
+/** [checked] folded in with the two roles, so one diff covers the whole checkbox. */
+private data class CheckboxRenderState(
+    val checked: Boolean,
+    val enabled: Boolean,
+    val box: Color,
+    val checkmark: Color,
+)
 
 /**
  * The bare [Switch]'s two v1 roles and its state, keyed as one attribute so a retune diffs atomically.
@@ -106,6 +117,28 @@ private data class SwitchRenderState(
     val checked: Boolean,
     val track: Color,
     val thumb: Color,
+)
+
+/**
+ * The bare [RadioButton]'s state and its two v1 roles. [controlColor] carries the ring, which the shared base
+ * gates drawing on; [dot] is the dot's own role.
+ */
+private fun Modifier.radioControl(
+    selected: Boolean,
+    ringColor: Color,
+    dotColor: Color,
+): Modifier = this.thenViewAttribute<WearRadioView, RadioRenderState>(
+    uniqueKey,
+    RadioRenderState(selected, ringColor, dotColor),
+) {
+    setRadioState(it.selected, it.ring, it.dot)
+}
+
+/** [selected] folded in with the two colours, so one diff covers the whole radio. */
+private data class RadioRenderState(
+    val selected: Boolean,
+    val ring: Color,
+    val dot: Color,
 )
 
 /**
@@ -143,7 +176,12 @@ fun Checkbox(
     Node(
         modifier = modifier
             .viewClass(WearCheckboxView::class.java)
-            .selectionControl(checked, resolved.controlColor(enabled, checked))
+            .checkboxControl(
+                checked = checked,
+                enabled = enabled,
+                boxColor = resolved.boxColor(enabled, checked),
+                checkmarkColor = resolved.checkmarkColor(enabled, checked),
+            )
             .run {
                 if (onCheckedChange == null || !enabled) this
                 else onClick { onCheckedChange(!checked) }
@@ -220,7 +258,11 @@ fun RadioButton(
     Node(
         modifier = modifier
             .viewClass(WearRadioView::class.java)
-            .selectionControl(selected, resolved.controlColor(enabled, selected))
+            .radioControl(
+                selected = selected,
+                ringColor = resolved.ringColor(enabled, selected),
+                dotColor = resolved.dotColor(enabled, selected),
+            )
             .run {
                 if (click == null || !enabled) this
                 else this.onClick { click() }
@@ -232,25 +274,32 @@ fun RadioButton(
  * The bare [Checkbox]'s colour set — v1's `CheckboxColors` (`ToggleControl.kt:199`), which is free here
  * because material3's row colour type is `CheckboxButtonColors`.
  *
- * v1 splits this into two independently animated roles, `boxColor` and `checkmarkColor`; see the file
- * header for why the checkmark half has no slot to reach the canvas.
+ * The eight fields are v1's `DefaultCheckboxColors` in upstream's order (`:420-484`), standing in for its two
+ * independently animated roles `boxColor` / `checkmarkColor`, each read through `animateSelectionColor`
+ * (`materialcore/SelectionControls.kt:415-432`) and resolved per `enabled`/`checked` below.
  */
 data class CheckboxColors(
     val checkedBoxColor: Color,
     val checkedCheckmarkColor: Color,
     val uncheckedBoxColor: Color,
+    val uncheckedCheckmarkColor: Color,
     val disabledCheckedBoxColor: Color,
+    val disabledCheckedCheckmarkColor: Color,
     val disabledUncheckedBoxColor: Color,
+    val disabledUncheckedCheckmarkColor: Color,
 ) {
-    /**
-     * The outline and the fill share one colour in upstream's `drawBox` (`ToggleControl.kt:81`, `:383-396`)
-     * and here in the tick too, and which colour depends on the state: an unchecked box is the outline
-     * token, not a faded primary.
-     */
-    fun controlColor(enabled: Boolean, checked: Boolean): Color = when {
+    /** v1's `boxColor(enabled, checked)` — the outline, which upstream never fills or fades. */
+    fun boxColor(enabled: Boolean, checked: Boolean): Color = when {
         !enabled -> if (checked) disabledCheckedBoxColor else disabledUncheckedBoxColor
         checked -> checkedBoxColor
         else -> uncheckedBoxColor
+    }
+
+    /** v1's `checkmarkColor(enabled, checked)` — the tick, drawn over the box. */
+    fun checkmarkColor(enabled: Boolean, checked: Boolean): Color = when {
+        !enabled -> if (checked) disabledCheckedCheckmarkColor else disabledUncheckedCheckmarkColor
+        checked -> checkedCheckmarkColor
+        else -> uncheckedCheckmarkColor
     }
 }
 
@@ -291,18 +340,29 @@ data class SwitchColors(
  * and `RadioButtonDefaults` (`:341`), could not be adopted: both are material3's row types in
  * `RadioButton.kt:560` and `:320`, so this carries the `Bare` prefix.
  *
- * v1's two roles, `ringColor` and `dotColor`, are four-state each; here one colour drives ring and dot
- * (see the file header) and disabled unselected falls back to [disabledSelectedControlColor].
+ * The eight fields are v1's `DefaultRadioButtonColors` in upstream's order (`:556-620`), standing in for the
+ * two roles `ringColor` / `dotColor` (`:243-261`).
  */
 data class BareRadioButtonColors(
-    val selectedControlColor: Color,
-    val unselectedControlColor: Color,
-    val disabledSelectedControlColor: Color,
+    val selectedRingColor: Color,
+    val selectedDotColor: Color,
+    val unselectedRingColor: Color,
+    val unselectedDotColor: Color,
+    val disabledSelectedRingColor: Color,
+    val disabledSelectedDotColor: Color,
+    val disabledUnselectedRingColor: Color,
+    val disabledUnselectedDotColor: Color,
 ) {
-    fun controlColor(enabled: Boolean, selected: Boolean): Color = when {
-        !enabled -> disabledSelectedControlColor
-        selected -> selectedControlColor
-        else -> unselectedControlColor
+    fun ringColor(enabled: Boolean, selected: Boolean): Color = when {
+        !enabled -> if (selected) disabledSelectedRingColor else disabledUnselectedRingColor
+        selected -> selectedRingColor
+        else -> unselectedRingColor
+    }
+
+    fun dotColor(enabled: Boolean, selected: Boolean): Color = when {
+        !enabled -> if (selected) disabledSelectedDotColor else disabledUnselectedDotColor
+        selected -> selectedDotColor
+        else -> unselectedDotColor
     }
 }
 
@@ -310,26 +370,33 @@ data class BareRadioButtonColors(
  * Defaults for the bare [Checkbox] — v1's `CheckboxDefaults` (`ToggleControl.kt:264`), whose name is free
  * here.
  *
- * v1's `colors(...)` (`:276`) takes four optional colours and derives the four disabled roles with
+ * v1's `colors(...)` (`:276-298`) takes four optional colours and derives the four disabled roles with
  * `toDisabledColor()` (alpha 0.38, `material/ContentAlpha.kt:110`), resolving the enabled ones from v1's
  * `Colors` roles: `secondary` for the checked box and `contentColorFor(primary @ 0.5 alpha composited over
  * surface)` for the unchecked one (`:277-285`). This module ports material3's [ColorScheme] and has no v1
- * `Colors` object to read, so those three roles have no counterpart and the enabled colours come from the
- * row's material3 tokens instead; the factory is also no-arg, because its defaults would read
- * `MaterialTheme` and a `@Tunable` default cannot (see [Checkbox]). Callers who want v1's shape construct
- * [CheckboxColors] directly.
+ * `Colors` object to read, so those roles have no counterpart and the enabled colours come from the row's
+ * material3 tokens instead; the factory is also no-arg, because its defaults would read `MaterialTheme` and a
+ * `@Tunable` default cannot (see [Checkbox]). Two of v1's defaults are kept as written, so the unchecked pair
+ * shares one colour (`:283`, `:294`).
  */
 object CheckboxDefaults {
     @Tunable
     fun colors(): CheckboxColors = with(MaterialTheme.colorScheme) {
+        val uncheckedBox = CheckboxButtonTokens.UncheckedBoxColor.resolve(this)
+        val disabledUncheckedBox = CheckboxButtonTokens.DisabledUncheckedBoxColor.resolve(this)
+            .toDisabledColor(CheckboxButtonTokens.DisabledUncheckedBoxOpacity)
         CheckboxColors(
             checkedBoxColor = CheckboxButtonTokens.CheckedBoxColor.resolve(this),
             checkedCheckmarkColor = CheckboxButtonTokens.CheckedCheckmarkColor.resolve(this),
-            uncheckedBoxColor = CheckboxButtonTokens.UncheckedBoxColor.resolve(this),
+            uncheckedBoxColor = uncheckedBox,
+            uncheckedCheckmarkColor = uncheckedBox,
             disabledCheckedBoxColor = CheckboxButtonTokens.DisabledCheckedBoxColor.resolve(this)
                 .toDisabledColor(CheckboxButtonTokens.DisabledCheckedBoxOpacity),
-            disabledUncheckedBoxColor = CheckboxButtonTokens.DisabledUncheckedBoxColor.resolve(this)
-                .toDisabledColor(CheckboxButtonTokens.DisabledUncheckedBoxOpacity),
+            disabledCheckedCheckmarkColor =
+                CheckboxButtonTokens.DisabledCheckedCheckmarkColor.resolve(this)
+                    .toDisabledColor(CheckboxButtonTokens.DisabledCheckedCheckmarkOpacity),
+            disabledUncheckedBoxColor = disabledUncheckedBox,
+            disabledUncheckedCheckmarkColor = disabledUncheckedBox,
         )
     }
 }
@@ -382,18 +449,32 @@ object SwitchDefaults {
  * Defaults for the bare [RadioButton], keeping v1's `RadioButtonDefaults` name for material3's row in
  * `RadioButton.kt:320`; [RadioButton] reads this one.
  *
- * v1's `colors(...)` (`ToggleControl.kt:354`) takes the selected ring and dot from `Colors.secondary` and
- * the unselected pair from `contentColorFor(primary @ 0.5 alpha composited over surface)`; the same
- * missing-`Colors` substitution as at [CheckboxDefaults] applies.
+ * v1's `colors(...)` (`ToggleControl.kt:354-382`) takes four optional colours and gives the ring and the dot
+ * the same value in all four states — `selectedDotColor` defaults to `Colors.secondary` and
+ * `unselectedDotColor` to the same `contentColorFor(primary @ 0.5 alpha composited over surface)` as the ring
+ * (`:355-380`) — so the two roles split here only where a caller supplies [BareRadioButtonColors] directly.
+ * The same missing-`Colors` substitution as at [CheckboxDefaults] applies; the disabled roles come from the
+ * row's own tokens instead of v1's `toDisabledColor`, which is why the unselected pair is no longer the
+ * selected pair's disabled value.
  */
 object BareRadioButtonDefaults {
     @Tunable
     fun colors(): BareRadioButtonColors = with(MaterialTheme.colorScheme) {
+        val selected = RadioButtonTokens.SelectedControlColor.resolve(this)
+        val unselected = RadioButtonTokens.UnselectedControlColor.resolve(this)
+        val disabledSelected = RadioButtonTokens.DisabledSelectedControlColor.resolve(this)
+            .toDisabledColor(RadioButtonTokens.DisabledSelectedControlOpacity)
+        val disabledUnselected = RadioButtonTokens.DisabledUnselectedControlColor.resolve(this)
+            .toDisabledColor(RadioButtonTokens.DisabledUnselectedControlOpacity)
         BareRadioButtonColors(
-            selectedControlColor = RadioButtonTokens.SelectedControlColor.resolve(this),
-            unselectedControlColor = RadioButtonTokens.UnselectedControlColor.resolve(this),
-            disabledSelectedControlColor = RadioButtonTokens.DisabledSelectedControlColor.resolve(this)
-                .toDisabledColor(RadioButtonTokens.DisabledSelectedControlOpacity),
+            selectedRingColor = selected,
+            selectedDotColor = selected,
+            unselectedRingColor = unselected,
+            unselectedDotColor = unselected,
+            disabledSelectedRingColor = disabledSelected,
+            disabledSelectedDotColor = disabledSelected,
+            disabledUnselectedRingColor = disabledUnselected,
+            disabledUnselectedDotColor = disabledUnselected,
         )
     }
 }

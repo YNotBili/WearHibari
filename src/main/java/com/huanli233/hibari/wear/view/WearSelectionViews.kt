@@ -2,12 +2,14 @@ package com.huanli233.hibari.wear.view
 
 import android.animation.ValueAnimator
 import android.content.Context
+import android.graphics.BlendMode
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
+import android.os.Build
 import android.util.AttributeSet
 import android.view.View
 import android.view.animation.PathInterpolator
@@ -104,8 +106,21 @@ abstract class WearSelectionView(
 }
 
 /**
- * Checkbox: an outline square that fades out as a filled square fades in, with the two-segment
- * tick drawn on top. `CHECKBOX_WIDTH/HEIGHT 24`, `BOX_SIZE 18`, `BOX_STROKE 2`, `BOX_RADIUS 2`.
+ * The bare v1 [Checkbox]: an outline square, unchanging, with the two-segment tick drawn on top of it.
+ *
+ * The box is v1's `drawBox` (`material/ToggleControl.kt:383-397`), which the bare `Checkbox` hands core as
+ * `{ _, color, _, _ -> drawBox(color) }` (`:79`) — it takes no `progress`, so upstream has **no filled state at
+ * all**: one stroked round rect, `BOX_CORNER 3` / `BOX_STROKE 2` / `BOX_RADIUS 2` / `BOX_SIZE 18` (`:622-625`) on a
+ * 24 x 24 canvas (`:634-635`), at full opacity in every state. The fading fill the material3 row draws is not
+ * ported here.
+ *
+ * The tick is core's `animateTick` (`materialcore/SelectionControls.kt:462-477`) with its private `drawTick`
+ * (`:547-592`) and `eraseTick` (`:625-662`): two segments from (6.7, 12.3) and (9.3, 16.3) of `TICK_BASE_LENGTH
+ * 4.dp` and `TICK_STICK_LENGTH 8.dp`, the whole mark rotating off `TICK_ROTATION 15f` linearly and stroked with
+ * `StrokeCap.Butt` under `BlendMode.Hardlight` while disabled. `startXOffset` is 0 either way — it is
+ * `width - height` and both are 24.dp (`:106`) — so the tick is drawn where v1 draws it, and `eraseTick`'s dead
+ * second leg is ported as written for the same reason recorded on [WearCheckboxButtonView]'s own `eraseTick`
+ * (upstream compares an already clamped value there too), though the two forks erase from different points.
  */
 class WearCheckboxView @JvmOverloads constructor(
     context: Context,
@@ -116,106 +131,227 @@ class WearCheckboxView @JvmOverloads constructor(
     private val tickPath = Path()
     private val box = RectF()
 
-    /** The tick's travelling pen position, in dp along the design box. */
-    private val tickTotalDp = 2.5f + 6.0f
+    /** Scratch output of [rotate], which runs once per tick vertex. */
+    private val rotated = FloatArray(2)
 
-    override fun drawControl(canvas: Canvas, density: Float, progress: Float) {
-        val top = dp(density, (24f - 18f) / 2f)
-        val halfStroke = dp(density, 1f)
-        val size = dp(density, 18f)
-        val stroke = dp(density, 2f)
+    /** Which branch of `animateTick` is live: upstream branches on `checked`, not on `progress`. */
+    private var tickChecked = false
 
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = stroke
-        paint.color = withAlpha(controlColor, 1f - progress)
-        box.set(top + halfStroke, top + halfStroke, top + halfStroke + size - stroke, top + halfStroke + size - stroke)
-        canvas.drawRoundRect(box, dp(density, 1f), dp(density, 1f), paint)
+    /** Upstream's `enabled` reaches the tick only through the `blendMode` argument. */
+    private var tickEnabled = true
 
-        paint.style = Paint.Style.FILL
-        paint.color = withAlpha(controlColor, progress)
-        box.set(top, top, top + size, top + size)
-        canvas.drawRoundRect(box, dp(density, 2f), dp(density, 2f), paint)
+    private var tickColor: Color = Color.Unspecified
 
-        drawTick(canvas, density, progress)
+    /** Applies one resolved state: [boxColor] paints the outline, [checkmarkColor] the tick. */
+    fun setCheckboxState(checked: Boolean, enabled: Boolean, boxColor: Color, checkmarkColor: Color) {
+        tickChecked = checked
+        tickEnabled = enabled
+        tickColor = checkmarkColor
+        // `controlColor` is what the base class gates `onDraw` with.
+        controlColor = boxColor
+        animateProgressTo(if (checked) 1f else 0f)
     }
 
-    /**
-     * The Material3 fork of `AnimateTick`. Two segments grow in sequence, and the whole mark rotates
-     * from 15 deg toward 0 with a cubic ease (`1 - p^3`) rather than linearly.
-     */
-    private fun drawTick(canvas: Canvas, density: Float, progress: Float) {
-        val travel = dp(density, min(progress * tickTotalDp, tickTotalDp))
-        if (travel <= 0f) return
+    override fun drawControl(canvas: Canvas, density: Float, progress: Float) {
+        drawBox(canvas, density)
+        if (tickChecked) drawTick(canvas, density, progress) else eraseTick(canvas, density, progress)
+    }
 
-        val baseStartX = dp(density, 7.4f)
-        val baseStartY = dp(density, 13.0f)
-        val stickStartX = dp(density, 10.5f)
-        val stickStartY = dp(density, 15.1f)
-        val centerX = dp(density, 12f)
-        val centerY = dp(density, 12f)
-        val angleDegrees = 15f * (1f - progress * progress * progress)
+    /** `DrawScope.drawBox`: the stroked outline, full opacity, whatever `progress` is. */
+    private fun drawBox(canvas: Canvas, density: Float) {
+        val topCorner = dp(density, BoxCornerDp)
+        val strokeWidth = dp(density, BoxStrokeDp)
+        val halfStrokeWidth = strokeWidth / 2f
+        val radius = dp(density, BoxRadiusDp)
+        val size = dp(density, BoxSizeDp)
+
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = strokeWidth
+        paint.color = controlColor.toArgb()
+        box.set(
+            topCorner + halfStrokeWidth,
+            topCorner + halfStrokeWidth,
+            topCorner + halfStrokeWidth + size - strokeWidth,
+            topCorner + halfStrokeWidth + size - strokeWidth,
+        )
+        canvas.drawRoundRect(box, radius - halfStrokeWidth, radius - halfStrokeWidth, paint)
+    }
+
+    /** `drawTick`: base segment first, then the stick, both under one linear rotation about (12, 12). */
+    private fun drawTick(canvas: Canvas, density: Float, tickProgress: Float) {
+        val tickBaseLength = dp(density, TickBaseLengthDp)
+        val tickStickLength = dp(density, TickStickLengthDp)
+        val tickTotalLength = tickBaseLength + tickStickLength
+        val tickProgressPx = tickProgress * tickTotalLength
+        val centerX = dp(density, DesignCenterDp)
+        val centerY = dp(density, DesignCenterDp)
+        val angleDegrees = TickRotationDegrees - TickRotationDegrees / tickTotalLength * tickProgressPx
         val radians = Math.toRadians(angleDegrees.toDouble()).toFloat()
         val cosA = cos(radians)
         val sinA = sin(radians)
 
-        fun rotate(x: Float, y: Float): FloatArray {
-            val dx = x - centerX
-            val dy = y - centerY
-            return floatArrayOf(centerX + dx * cosA - dy * sinA, centerY + dx * sinA + dy * cosA)
-        }
+        val baseStartX = dp(density, TickBaseStartXDp)
+        val baseStartY = dp(density, TickBaseStartYDp)
+        val tickBaseProgress = min(tickProgressPx, tickBaseLength)
 
         tickPath.reset()
-        var p = rotate(baseStartX, baseStartY)
-        tickPath.moveTo(p[0], p[1])
-        val seg1 = dp(density, 2.5f).let { if (travel > it) it else travel }
-        p = rotate(baseStartX + seg1, baseStartY + seg1)
-        tickPath.lineTo(p[0], p[1])
+        rotate(baseStartX, baseStartY, centerX, centerY, cosA, sinA)
+        tickPath.moveTo(rotated[0], rotated[1])
+        rotate(
+            baseStartX + tickBaseProgress,
+            baseStartY + tickBaseProgress,
+            centerX,
+            centerY,
+            cosA,
+            sinA,
+        )
+        tickPath.lineTo(rotated[0], rotated[1])
 
-        if (travel > dp(density, 2.5f)) {
-            val seg2 = dp(density, 6f).let {
-                val raw = travel - dp(density, 2.5f)
-                if (raw > it) it else raw
-            }
-            p = rotate(stickStartX, stickStartY)
-            tickPath.moveTo(p[0], p[1])
-            p = rotate(stickStartX + seg2, stickStartY - seg2)
-            tickPath.lineTo(p[0], p[1])
+        if (tickProgressPx > tickBaseLength) {
+            val tickStickProgress = min(tickProgressPx - tickBaseLength, tickStickLength)
+            val stickStartX = dp(density, TickStickStartXDp)
+            val stickStartY = dp(density, TickStickStartYDp)
+            rotate(stickStartX, stickStartY, centerX, centerY, cosA, sinA)
+            tickPath.moveTo(rotated[0], rotated[1])
+            rotate(
+                stickStartX + tickStickProgress,
+                stickStartY - tickStickProgress,
+                centerX,
+                centerY,
+                cosA,
+                sinA,
+            )
+            tickPath.lineTo(rotated[0], rotated[1])
         }
 
-        paint.style = Paint.Style.STROKE
-        paint.strokeCap = Paint.Cap.ROUND
-        paint.strokeWidth = dp(density, 2f)
-        paint.color = controlColor.toArgb()
-        canvas.drawPath(tickPath, paint)
+        strokeTick(canvas, density)
     }
 
-    private fun withAlpha(color: Color, factor: Float): Int {
-        val a = (color.alpha * factor).coerceIn(0f, 1f)
-        return color.copy(alpha = a).toArgb()
+    /** `eraseTick`: unchecked runs the mark back into itself from its tip, without the rotation. */
+    private fun eraseTick(canvas: Canvas, density: Float, tickProgress: Float) {
+        val tickBaseLength = dp(density, TickBaseLengthDp)
+        val tickStickLength = dp(density, TickStickLengthDp)
+        val tickTotalLength = tickBaseLength + tickStickLength
+        val tickProgressPx = tickProgress * tickTotalLength
+        val stickStartX = dp(density, EraseStickStartXDp)
+        val stickStartY = dp(density, EraseStickStartYDp)
+        val tickStickProgress = min(tickProgressPx, tickStickLength)
+
+        tickPath.reset()
+        tickPath.moveTo(stickStartX, stickStartY)
+        tickPath.lineTo(stickStartX - tickStickProgress, stickStartY + tickStickProgress)
+
+        // Upstream compares the already clamped `tickStickProgress` here, so this leg never draws; ported as
+        // written rather than repaired to the apparently intended `tickProgressPx` test.
+        if (tickStickProgress > tickStickLength) {
+            val tickBaseProgress = min(tickProgressPx - tickStickLength, tickBaseLength)
+            val baseStartX = dp(density, EraseBaseStartXDp)
+            val baseStartY = dp(density, EraseBaseStartYDp)
+            tickPath.moveTo(baseStartX, baseStartY)
+            tickPath.lineTo(baseStartX - tickBaseProgress, baseStartY - tickBaseProgress)
+        }
+
+        strokeTick(canvas, density)
+    }
+
+    private fun strokeTick(canvas: Canvas, density: Float) {
+        paint.style = Paint.Style.STROKE
+        paint.strokeCap = Paint.Cap.BUTT
+        paint.strokeWidth = dp(density, TickStrokeWidthDp)
+        paint.color = tickColor.toArgb()
+        // Upstream: `blendMode = if (enabled) DefaultBlendMode else BlendMode.Hardlight`. Views only
+        // gained Paint#setBlendMode in API 29, so a disabled tick stays src-over below that.
+        val hardlight = !tickEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        if (hardlight) paint.blendMode = BlendMode.HARD_LIGHT
+        canvas.drawPath(tickPath, paint)
+        if (hardlight) paint.blendMode = BlendMode.SRC_OVER
+    }
+
+    /** `Offset.rotate(angleRadians, center)`, spelled out for a `Path`. */
+    private fun rotate(x: Float, y: Float, centerX: Float, centerY: Float, cosA: Float, sinA: Float) {
+        val dx = x - centerX
+        val dy = y - centerY
+        rotated[0] = centerX + dx * cosA - dy * sinA
+        rotated[1] = centerY + dx * sinA + dy * cosA
+    }
+
+    private companion object {
+        // material/ToggleControl.kt:622-625.
+        const val BoxCornerDp = 3f
+        const val BoxStrokeDp = 2f
+        const val BoxRadiusDp = 2f
+        const val BoxSizeDp = 18f
+
+        // materialcore/SelectionControls.kt:690-692, with the design centre `drawTick` rotates about.
+        const val TickBaseLengthDp = 4f
+        const val TickStickLengthDp = 8f
+        const val TickRotationDegrees = 15f
+        const val TickBaseStartXDp = 6.7f
+        const val TickBaseStartYDp = 12.3f
+        const val TickStickStartXDp = 9.3f
+        const val TickStickStartYDp = 16.3f
+        const val EraseStickStartXDp = 17.3f
+        const val EraseStickStartYDp = 8.3f
+        const val EraseBaseStartXDp = 10.7f
+        const val EraseBaseStartYDp = 16.3f
+        const val TickStrokeWidthDp = 2f
+        const val DesignCenterDp = 12f
     }
 }
 
-/** Radio: a constant-weight ring with a centre dot whose radius tracks progress. */
+/**
+ * The bare v1 [RadioButton]: a ring of constant weight with a centre dot whose radius tracks progress.
+ *
+ * Ring and dot are v1's two independent roles (`material/ToggleControl.kt:243`), so they take separate
+ * colours: `RADIO_CIRCLE_RADIUS 9` stroked at `RADIO_CIRCLE_STROKE 2`, dot at `progress * RADIO_DOT_RADIUS 5`
+ * (`materialcore/SelectionControls.kt:378-397`, constants `:696-698`). The centre is the draw scope's, not a
+ * hard-coded 12.dp (`:373-377`), and the control is centred within its 24 x 24 canvas (`:512-521`).
+ *
+ * What upstream's `dotAlphaProgress` does — fade the dot's own alpha over `RAPID` after a `FLASH` delay, and
+ * only while going to unchecked, because core nulls the animation once checked (`:341-353`) — is not ported; see
+ * the class header. At rest both branches are the same, `alpha = dotColor.alpha`.
+ */
 class WearRadioView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0,
 ) : WearSelectionView(context, attrs, defStyleAttr, 24f, 24f) {
 
+    private var dotColor: Color = Color.Unspecified
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    /** Applies one resolved state; [ring] and [dot] are v1's `ringColor` / `dotColor` roles. */
+    fun setRadioState(selected: Boolean, ring: Color, dot: Color) {
+        controlColor = ring
+        dotColor = dot
+        animateProgressTo(if (selected) 1f else 0f)
+    }
+
     override fun drawControl(canvas: Canvas, density: Float, progress: Float) {
-        val cx = dp(density, 12f)
-        val cy = dp(density, 12f)
+        val cx = width / 2f
+        val cy = height / 2f
 
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = dp(density, 2f)
+        paint.strokeWidth = dp(density, RadioCircleStrokeDp)
         paint.color = controlColor.toArgb()
-        canvas.drawCircle(cx, cy, dp(density, 9f), paint)
+        canvas.drawCircle(cx, cy, dp(density, RadioCircleRadiusDp), paint)
 
-        val dotRadius = dp(density, 5f) * progress
+        val dotRadius = dp(density, RadioDotRadiusDp) * progress
         if (dotRadius > 0f) {
             paint.style = Paint.Style.FILL
+            paint.color = dotColor.toArgb()
             canvas.drawCircle(cx, cy, dotRadius, paint)
         }
+    }
+
+    private companion object {
+        // materialcore/SelectionControls.kt:696-698.
+        const val RadioCircleRadiusDp = 9f
+        const val RadioCircleStrokeDp = 2f
+        const val RadioDotRadiusDp = 5f
     }
 }
 

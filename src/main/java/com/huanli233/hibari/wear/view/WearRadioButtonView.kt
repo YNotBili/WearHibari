@@ -12,12 +12,11 @@ import android.util.AttributeSet
  * `progress * RADIO_DOT_RADIUS 5`. Ring and dot share one colour, because material3's `RadioControl`
  * passes the same resolver to `ringColor` and `dotColor`.
  *
- * [WearRadioView] already draws this geometry for the bare control, and upstream pins the control's
- * own draw scope to `CONTROL_WIDTH x CONTROL_HEIGHT` (24 x 24) and centres on it, so its hard-coded
- * (12, 12) dp is the same point as this view's measured centre: this class is a duplicate of
- * [WearRadioView], not a necessary variant. It exists only because that view belongs to
- * `SelectionControls.kt`, which this port may not edit; folding the two together is the
- * orchestrator's call.
+ * [WearRadioView] draws the same geometry for the bare control, which now also splits the two roles, and
+ * upstream pins the control's own draw scope to `CONTROL_WIDTH x CONTROL_HEIGHT` (24 x 24) and centres on
+ * it, so its measured centre is the same point this view draws at: this class is a duplicate of
+ * [WearRadioView] modulo the split, not a necessary variant. It exists only because that view belongs to
+ * `SelectionControls.kt`, which this port may not edit; folding the two together is the orchestrator's call.
  *
  * Deviation, shared with [WearRadioView]: upstream runs the dot radius and - only while unselected,
  * materialcore nulls the alpha animation once checked - the dot alpha as two float animations, but
