@@ -144,6 +144,8 @@ fun CheckboxButton(
                 .clickable(enabled = enabled) { onCheckedChange(!checked) }
                 .padding(contentPadding)
                 .minHeight(CheckboxButtonMinHeight)
+                // `Row(verticalAlignment = Alignment.CenterVertically)` (`:322`).
+                .buttonContentCentered()
                 .checkboxButtonStateDescription(checked),
         ) {
             if (iconScope != null) {
@@ -268,6 +270,10 @@ fun SplitCheckboxButton(
                     .checkboxButtonRow()
                     .weight(1f)
                     .matchParentHeight()
+                    // The label section is the row that carries the `minHeight` floor's other half:
+                    // upstream centres its own children (`:351`), and a full-height section that does
+                    // not would put the labels on its top edge.
+                    .buttonContentCentered()
                     .container(
                         ContainerSpec(
                             shape = checkboxButtonSectionShape(shape, first = true),

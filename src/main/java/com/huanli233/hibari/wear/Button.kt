@@ -114,7 +114,11 @@ fun Button(
             .minHeight(ButtonDefaults.Height)
             .container(spec)
             .clickable(enabled, onClick)
-            .padding(contentPadding),
+            .padding(contentPadding)
+            // `Row(verticalAlignment = Alignment.CenterVertically)` (`:2403`): without it the label
+            // sits on the top edge of the `minHeight` floor and the rest of the button is empty,
+            // which reads as a reserved second line for a subtitle this button does not have.
+            .buttonContentCentered(),
     ) {
         // Upstream's `SingleSlotButtonImpl` hands its children `LocalContentColor` *and*
         // `LocalTextStyle provides labelFont` (`material3/Button.kt:2385-2388`). Each variant passes its
@@ -246,11 +250,17 @@ fun ButtonContent(
 }
 
 /**
- * `Row(verticalAlignment = Alignment.CenterVertically)` (`material3/Button.kt:1328`) as a Views
- * attribute: `LinearLayout.setGravity` is the only way to centre the cross axis of children that come
- * from a caller's slot, where this file cannot hand them a `RowScope.gravity`.
+ * `Row(verticalAlignment = Alignment.CenterVertically)` as a Views attribute: `LinearLayout.setGravity`
+ * is the only way to centre the cross axis of children that come from a caller's slot, where the
+ * component cannot hand them a `RowScope.gravity`.
+ *
+ * Internal rather than private because the three labelled selection rows need the same line, and
+ * upstream gives each of them the same `verticalAlignment` (`material3/CheckboxButton.kt:322`, `:351`,
+ * `SwitchButton.kt:343`, `:371`, `RadioButton.kt:181`, `:318`, `:346`). Without it a row that carries a
+ * `minHeight` floor puts its label column on the top edge, which reads as a reserved second line for a
+ * subtitle the component was not given.
  */
-private fun Modifier.buttonContentCentered(): Modifier =
+internal fun Modifier.buttonContentCentered(): Modifier =
     this.thenViewAttribute<View, Int>(uniqueKey, Gravity.CENTER_VERTICAL) {
         if (this is LinearLayout) gravity = it
     }

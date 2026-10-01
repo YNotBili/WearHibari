@@ -125,7 +125,9 @@ fun RadioButton(
                     )
                 )
                 .radioSelectionClickable(enabled, onSelect)
-                .padding(contentPadding),
+                .padding(contentPadding)
+                // `Row(verticalAlignment = Alignment.CenterVertically)` (`:181`).
+                .buttonContentCentered(),
         ) {
             if (iconSlot != null) {
                 Box(modifier = Modifier.gravity(Gravity.CENTER_VERTICAL)) {

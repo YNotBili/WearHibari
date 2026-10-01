@@ -122,6 +122,8 @@ fun SwitchButton(
             // Upstream's whole row is the `toggleable`, so the labels toggle the control too.
             .clickable(enabled) { onCheckedChange(!checked) }
             .padding(contentPadding)
+            // `Row(verticalAlignment = Alignment.CenterVertically)` (`:343`).
+            .buttonContentCentered()
             .switchButtonStateDescription(checked),
     ) {
         if (iconSlot != null) {
@@ -234,6 +236,8 @@ fun SplitSwitchButton(
             modifier = Modifier
                 .matchParentHeight()
                 .minHeight(SwitchButtonMinHeight)
+                // The label section is the row upstream centres at `:371`.
+                .buttonContentCentered()
                 .switchButtonSurface(
                     SwitchButtonSurface(
                         shape = switchButtonSplitSectionShape(shape, startSection = true),
