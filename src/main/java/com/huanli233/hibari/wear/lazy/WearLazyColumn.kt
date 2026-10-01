@@ -1,5 +1,6 @@
 package com.huanli233.hibari.wear.lazy
 
+import android.view.View
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.wear.widget.WearableRecyclerView
@@ -16,9 +17,11 @@ import com.huanli233.hibari.runtime.remember
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.ref
 import com.huanli233.hibari.ui.thenViewAttribute
+import com.huanli233.hibari.ui.unit.Dp
 import com.huanli233.hibari.ui.unit.PaddingValues
 import com.huanli233.hibari.ui.unit.StablePaddingValues
 import com.huanli233.hibari.ui.unit.dp
+import com.huanli233.hibari.ui.unit.toPx
 import com.huanli233.hibari.ui.uniqueKey
 import com.huanli233.hibari.ui.viewClass
 import com.huanli233.hibari.wear.WearScreen
@@ -100,6 +103,16 @@ class ScalingLazyListState(
  * is the closest existing Views equivalent: its `LayoutCallback` is the per-item transform hook, and
  * `setEdgeItemsCenteringEnabled` provides the half-viewport padding the centred arrangement needs.
  *
+ * Two upstream parameters are reduced rather than copied, and both keep upstream's default value:
+ * [verticalSpacing] is the `space` of `Arrangement.spacedBy(4.dp, Alignment.Top)`
+ * (`foundation/lazy/ScalingLazyColumn.kt:351-355`), whose `alignment` argument only decides which end
+ * leftover space goes to and a scrolling list has none; [horizontalAlignment] is upstream's
+ * `horizontalAlignment: Alignment.Horizontal` (`:356`), default `Alignment.CenterHorizontally`, and it
+ * is [LazyItemAlignment] because a Views list cannot align an item — the item is `MATCH_PARENT` wide
+ * and `LinearLayoutManager` puts every child at the cross-axis start — so what it writes is where the
+ * content sits inside that row. That distinction is visible: the item is also what the scale pivots
+ * about, so content pinned to the start slides toward the centre as it shrinks.
+ *
  * Not ported, with reasons:
  *  - **Snap fling** (`ScalingLazyColumnSnapFlingBehavior`): it settles on a Compose `LazyListAnchor`
  *    computed from measured item offsets mid-fling. A `RecyclerView` fling settles on velocity decay;
@@ -115,6 +128,8 @@ fun ScalingLazyColumn(
     modifier: Modifier = Modifier,
     state: ScalingLazyListState? = null,
     contentPadding: PaddingValues = PaddingValues(horizontal = 10.dp),
+    verticalSpacing: Dp = 4.dp,
+    horizontalAlignment: LazyItemAlignment = LazyItemAlignment.Center,
     centerVertically: Boolean = true,
     scalingParams: ListTransformParams = WearListTransformDefaults.ScalingLazy,
     reverseLayout: Boolean = false,
@@ -128,6 +143,8 @@ fun ScalingLazyColumn(
         modifier = modifier,
         state = resolvedState,
         contentPadding = contentPadding,
+        verticalSpacing = verticalSpacing,
+        horizontalAlignment = horizontalAlignment,
         centerVertically = centerVertically,
         scalingParams = scalingParams,
         reverseLayout = reverseLayout,
@@ -153,6 +170,8 @@ fun TransformingLazyColumn(
     modifier: Modifier = Modifier,
     state: ScalingLazyListState? = null,
     contentPadding: PaddingValues = PaddingValues(),
+    verticalSpacing: Dp = 4.dp,
+    horizontalAlignment: LazyItemAlignment = LazyItemAlignment.Center,
     transformParams: ListTransformParams = WearListTransformDefaults.ScalingLazy,
     reverseLayout: Boolean = false,
     userScrollEnabled: Boolean = true,
@@ -163,6 +182,8 @@ fun TransformingLazyColumn(
         modifier = modifier,
         state = resolvedState,
         contentPadding = contentPadding,
+        verticalSpacing = verticalSpacing,
+        horizontalAlignment = horizontalAlignment,
         centerVertically = false,
         scalingParams = transformParams,
         reverseLayout = reverseLayout,
@@ -176,6 +197,8 @@ internal fun WearLazyColumn(
     modifier: Modifier,
     state: ScalingLazyListState,
     contentPadding: PaddingValues,
+    verticalSpacing: Dp,
+    horizontalAlignment: LazyItemAlignment,
     centerVertically: Boolean,
     scalingParams: ListTransformParams,
     reverseLayout: Boolean,
@@ -198,6 +221,7 @@ internal fun WearLazyColumn(
     // remembered through the view, not the modifier, because RecyclerView keeps its own reference.
     val callback = remember { WearListTransformLayoutCallback(scalingParams) }
     callback.params = scalingParams
+    val spacingDecoration = remember { WearListSpacingDecoration(0) }
 
     Node(
         modifier = modifier
@@ -214,11 +238,25 @@ internal fun WearLazyColumn(
             .wearListScrollableManager(callback, userScrollEnabled)
             .wearListReverseLayout(reverseLayout)
             .wearListEdgeCentering(centerVertically, contentPadding)
+            .wearListItemSpacing(verticalSpacing, spacingDecoration)
+            .wearListItemAlignment(horizontalAlignment, callback)
             .ref { view ->
                 if (view !is WearableRecyclerView) return@ref
                 view.adapter = adapter
                 view.isCircularScrollingGestureEnabled = false
                 state.attach(view)
+                // A row attached later has never seen the current alignment, and the attach hook is
+                // the only moment it is safe to write `LayoutParams` on: doing it from the layout
+                // callback would request a layout from inside one.
+                view.addOnChildAttachStateChangeListener(
+                    object : RecyclerView.OnChildAttachStateChangeListener {
+                        override fun onChildViewAttachedToWindow(child: View) {
+                            callback.applyItemAlignment(child)
+                        }
+
+                        override fun onChildViewDetachedFromWindow(child: View) = Unit
+                    }
+                )
             }
     )
 }
@@ -298,6 +336,42 @@ private data class WearListCentering(
     val centerVertically: Boolean,
     val contentPadding: StablePaddingValues,
 )
+
+/**
+ * The gap between items, which is the one number `Arrangement.spacedBy(4.dp, Alignment.Top)` carries
+ * for a list: its `alignment` argument only decides which end the leftover space goes to, and a
+ * scrolling list has no leftover space.
+ *
+ * The decoration is installed once and then written to, because `addItemDecoration` would stack a
+ * second copy on every tune and double the gap. The spacing lands as whole pixels because that is
+ * what a `Rect` offset holds.
+ */
+private fun Modifier.wearListItemSpacing(
+    verticalSpacing: Dp,
+    decoration: WearListSpacingDecoration,
+): Modifier = thenViewAttribute<WearableRecyclerView, Dp>(uniqueKey, verticalSpacing) { spacing ->
+    decoration.spacingPx = spacing.toPx(context)
+    if (itemDecorationCount == 0) addItemDecoration(decoration)
+    // The offsets are read during layout, so the rows already placed have to be laid out again.
+    requestLayout()
+}
+
+/**
+ * [LazyItemAlignment] as a `gravity` on each item's content, applied to the rows on screen now and to
+ * every row attached later through the listener installed in [WearLazyColumn].
+ */
+private fun Modifier.wearListItemAlignment(
+    horizontalAlignment: LazyItemAlignment,
+    callback: WearListTransformLayoutCallback,
+): Modifier = thenViewAttribute<WearableRecyclerView, LazyItemAlignment>(uniqueKey, horizontalAlignment) { alignment ->
+    if (callback.horizontalAlignment == alignment) return@thenViewAttribute
+    callback.horizontalAlignment = alignment
+    var moved = false
+    for (index in 0 until childCount) {
+        if (callback.applyItemAlignment(getChildAt(index))) moved = true
+    }
+    if (moved) requestLayout()
+}
 
 /**
  * Skips `submitList` for an item list that compares equal to the one already in place.
