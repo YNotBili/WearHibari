@@ -1,0 +1,49 @@
+WearHibari
+Copyright (c) 2026, CryNet Studio by RJ
+Licensed under the BSD 3-Clause License (see LICENSE).
+
+Third-party attribution
+=======================
+
+Ported design and API surface
+-----------------------------
+
+This library is a re-implementation, on plain android.view.View and Drawable, of the public API
+surface and the visual behaviour of Jetpack Wear Compose:
+
+    androidx.wear.compose.material3
+    androidx.wear.compose.foundation
+    androidx.wear.compose.material
+    androidx.wear.compose.materialcore
+
+    Copyright The Android Open Source Project
+    Licensed under the Apache License, Version 2.0.
+    https://www.apache.org/licenses/LICENSE-2.0
+    Source: https://github.com/androidx/androidx (androidx-wear-compose)
+
+Attribution is given under the terms of Apache-2.0 sections 4(a) and 4(b). Source files in this
+library carry no per-file header on purpose: the re-implementations are Hibari's own code, and where
+a file is a translation of an upstream file, the file's own documentation names the upstream file and
+the line ranges it was read from.
+
+Copied resources
+----------------
+
+These files are verbatim or near-verbatim copies from androidx.wear.compose and stay under Apache-2.0:
+
+    src/main/res/drawable/wear_m3c_check_animation.xml
+    src/main/res/drawable/wear_m3c_failure_animation.xml
+    src/main/res/drawable/wear_m3c_error.xml
+    src/main/res/drawable/wear_m3c_open_on_phone_animation.xml
+    src/main/res/values/strings.xml      (keys and default English values)
+    Numeric token values under src/main/java/com/huanli233/hibari/wear/tokens/
+
+Dependencies
+------------
+
+This library links the Hibari runtime modules (hibari-runtime, hibari-ui, hibari-ui-graphics,
+hibari-foundation, hibari-animation, hibari-material, hibari-recyclerview, hibari-compiler), which
+are licensed under the GNU Lesser General Public License, version 2.1. The LGPL obligations attach to
+those modules, not to this one: a distributed binary that includes them must let the recipient
+replace or modify them, and their source is available from the repository this library is a
+submodule of.
