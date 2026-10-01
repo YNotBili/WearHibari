@@ -4,6 +4,7 @@ import com.huanli233.hibari.foundation.Box
 import com.huanli233.hibari.foundation.BoxScope
 import com.huanli233.hibari.runtime.Tunable
 import com.huanli233.hibari.runtime.currentContext
+import com.huanli233.hibari.runtime.remember
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.geometry.Shape
 import com.huanli233.hibari.ui.graphics.Color
@@ -53,21 +54,36 @@ fun TextButton(
     content: @Tunable BoxScope.() -> Unit,
 ) {
     val resolvedShapes = shapes ?: TextButtonDefaults.shapes()
-    val resolvedColors = colors ?: TextButtonDefaults.textButtonColors()
+    // The default colour set — two token resolves and one alpha write — is rebuilt on every tune
+    // otherwise. `remember`'s calculation is `@DisallowTunableCalls` (`runtime/Tunables.kt:18`), so the
+    // scheme is read here and the private extension `textButtonColors()` delegates to —
+    // `ColorScheme.defaultTextButtonColors` — is applied to it: the same expression, memoised on the
+    // scheme instance, which is what moves when a caller re-`provides` a theme. Held outside the elvis
+    // so the slot is visited once per tune whichever branch `colors` takes, as in `IconButton`.
+    val scheme = MaterialTheme.colorScheme
+    val defaultColors = remember(scheme) { scheme.defaultTextButtonColors() }
+    val resolvedColors = colors ?: defaultColors
+    // A fresh spec every tune costs a ContainerSpec plus a boxed disabled colour
+    // (`ContainerSpec.disabledContainerColor` is `Color?`) and then a field-by-field compare in the
+    // container attribute (`ui/Attribute.kt:68-79` reads only key, value and reuseSupported). All four
+    // inputs are keys and all four compare by value — `TextButtonColors`/`TextButtonShapes` override
+    // `equals`, `BorderStroke` is a data class, `enabled` is a boxed constant — so an equal-but-rebuilt
+    // argument still hits. `enabled` is an input, not a detail: it picks which colour the spec carries.
+    val spec = remember(resolvedShapes, resolvedColors, border, enabled) {
+        ContainerSpec(
+            shape = resolvedShapes.shape,
+            containerColor = resolvedColors.containerColor(enabled),
+            border = border,
+            pressedShape = resolvedShapes.pressedShape.takeIf {
+                it != resolvedShapes.shape
+            },
+            disabledContainerColor = resolvedColors.disabledContainerColor,
+        )
+    }
     val scope = content
     Box(
         modifier = modifier
-            .container(
-                ContainerSpec(
-                    shape = resolvedShapes.shape,
-                    containerColor = resolvedColors.containerColor(enabled),
-                    border = border,
-                    pressedShape = resolvedShapes.pressedShape.takeIf {
-                        it != resolvedShapes.shape
-                    },
-                    disabledContainerColor = resolvedColors.disabledContainerColor,
-                ),
-            )
+            .container(spec)
             .clickable(enabled, onClick),
     ) {
         provideContentColorAndStyle(
@@ -175,8 +191,14 @@ object TextButtonDefaults {
     val minimumVerticalListContentPadding: Dp
         @Tunable get() = screenHeightFraction(SMALL_VERTICAL_CONTENT_PADDING_FRACTION)
 
+    /**
+     * [shapes]'s value, hoisted because the expression reads no `TunationLocal` (`shape` is
+     * `ShapeTokens.CornerFull`): a `pressedShape` or a fraction would have had to stay a `remember`.
+     */
+    private val staticTextButtonShapes = TextButtonShapes(shape = shape)
+
     @Tunable
-    fun shapes(): TextButtonShapes = TextButtonShapes(shape = shape)
+    fun shapes(): TextButtonShapes = staticTextButtonShapes
 
     @Tunable
     fun shapes(shape: Shape?): TextButtonShapes =

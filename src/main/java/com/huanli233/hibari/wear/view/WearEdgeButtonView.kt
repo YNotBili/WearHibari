@@ -186,8 +186,9 @@ class WearEdgeButtonView @JvmOverloads constructor(
         setMeasuredDimension(
             boxWidth.roundToInt(),
             // `.padding(vertical = EdgeButtonVerticalPadding)` sits outside upstream's `.layout`
-            // block (`material3/EdgeButton.kt:105`), so the node occupies the button plus 3 dp top
-            // and bottom while every fade and radius keys off the button height alone. A Views
+            // block (`material3/EdgeButton.kt:184`, the 3 dp constant at `:629`), so the node occupies
+            // the button plus 3 dp top and bottom while every fade and radius keys off the button
+            // height alone. A Views
             // `padding` would inset the children without shrinking what this view paints, so the
             // gap is folded into the measured height and applied as a draw offset instead.
             (boxHeight + 2f * geometry.verticalPadding.value * density).roundToInt(),

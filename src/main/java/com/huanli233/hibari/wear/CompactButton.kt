@@ -17,6 +17,7 @@ import com.huanli233.hibari.foundation.attributes.width
 import com.huanli233.hibari.runtime.Tunable
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.geometry.Shape
+import com.huanli233.hibari.ui.text.TextAlign
 import com.huanli233.hibari.ui.thenViewAttribute
 import com.huanli233.hibari.ui.uniqueKey
 import com.huanli233.hibari.ui.unit.Dp
@@ -55,9 +56,6 @@ import com.huanli233.hibari.wear.tokens.ShapeTokens
  *    label inside the 32.dp that is left and the `Text` has to fit (with `maxLines = 1` and an
  *    ellipsis). The port writes exact `LayoutParams`, and a `LinearLayout` does not clip its children,
  *    so a label that is taller than 32.dp overflows the stadium instead of being trimmed.
- *  - Upstream's `TextConfiguration` on the label (`textAlign` start-with-icon / centre-without,
- *    `overflow = Ellipsis`, `maxLines = 1`, `:1387-1392`): Hibari's [Text] reads no
- *    `LocalTextConfiguration`, so a single-line ellipsis is the slot owner's job.
  *  - The deprecated `ButtonDefaults` aliases, on purpose: `ButtonDefaults.compactButtonShape`
  *    (`:1412-1418`) and the `ExtraSmallIconSize` / `SmallIconSize` / `CompactButtonHorizontalPadding`
  *    / `CompactButtonVerticalPadding` / `CompactButtonContentPadding` / `CompactButtonHeight` /
@@ -175,7 +173,7 @@ fun CompactButtonContent(
                 }
                 Spacer(
                     modifier = Modifier.size(
-                        DpSize(compactButtonIconSpacing, compactButtonIconSpacing)
+                        DpSize(ButtonDefaults.IconSpacing, ButtonDefaults.IconSpacing)
                     )
                 )
             }
@@ -183,6 +181,13 @@ fun CompactButtonContent(
                 provideContentColorAndStyle(
                     labelColor,
                     typography.fromToken(CompactButtonTokens.LabelFont),
+                    // Upstream's one-line budget for this label: start-aligned beside an icon, centred
+                    // when there is none (`material3/Button.kt:1387-1392`).
+                    TextConfiguration(
+                        if (iconSlot != null) TextAlign.Start else TextAlign.Center,
+                        TextOverflow.Ellipsis,
+                        maxLines = 1,
+                    ),
                 ) { labelSlot() }
             }
         }
@@ -272,12 +277,6 @@ object CompactButtonDefaults {
  */
 private fun ContainerSpec.withCompactBorder(border: BorderStroke?): ContainerSpec =
     if (border == null) this else copy(border = border, disabledBorder = border)
-
-/**
- * `ButtonDefaults.IconSpacing` (`material3/Button.kt:1946-1949`, 6.dp), restated because
- * `ButtonDefaults` is declared in `Button.kt`, which this file may not touch.
- */
-private val compactButtonIconSpacing: Dp = 6.dp
 
 /**
  * `Row(verticalAlignment = Alignment.CenterVertically)` (`material3/Button.kt:1374`) as a Views

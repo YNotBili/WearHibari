@@ -13,7 +13,6 @@ import com.huanli233.hibari.animation.AnimationVector1D
 import com.huanli233.hibari.animation.SpringSpec
 import com.huanli233.hibari.animation.animateTo
 import com.huanli233.hibari.animation.spring
-import com.huanli233.hibari.runtime.withFrameMillis
 import com.huanli233.hibari.ui.geometry.Shape
 import com.huanli233.hibari.ui.unit.Density
 import com.huanli233.hibari.ui.unit.Dp
@@ -23,6 +22,7 @@ import com.huanli233.hibari.wear.ButtonGroupDefaults
 import com.huanli233.hibari.wear.ContainerDrawable
 import com.huanli233.hibari.wear.buttonGroupComputeWidths
 import com.huanli233.hibari.wear.buttonGroupPressExpandedWidths
+import com.huanli233.hibari.wear.waitUntil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -233,7 +233,18 @@ class WearButtonGroupView @JvmOverloads constructor(
                     requestLayout()
                 }
             } else {
-                buttonGroupWaitUntil { state.value > ButtonGroupPressRetractFloor }
+                // Upstream's `ButtonGroup.kt:466` wait, bail-out and all, ported through
+                // [waitUntil]. The pairing is what makes that cap load-bearing: `collectLatest` cancels
+                // the running branch when the release arrives and `ButtonGroup.kt:464` launches the grow
+                // *inside* that branch, so the release cancels the only animation that can raise the
+                // value it then waits for — a tap shorter than the ~36 ms the 5600f spring needs to pass
+                // 0.75 leaves the child at its current expansion until the one second cap fires. Upstream
+                // guards the same wait with `!progress.isRunning` at `RoundButton.kt:114` and
+                // `AnimatedToggleRoundedCornerShape.kt:130`; the `ButtonGroup` copy has no such escape
+                // hatch, and it is ported as written because the criterion is fidelity and the cost is a
+                // stall rather than a wrong width. This is the line to change if the integration pass
+                // would rather ship the corrected version.
+                waitUntil { state.value > ButtonGroupPressRetractFloor }
                 state.animateTo(0f, ButtonGroupPressUpSpec) { requestLayout() }
             }
             requestLayout()
@@ -424,9 +435,6 @@ private const val ButtonGroupDownStiffness = ButtonGroupStandardFastStiffness * 
 /** The `0.75f` in `waitUntil { pressedAnimatable.value > 0.75f }` (`ButtonGroup.kt:466`). */
 private const val ButtonGroupPressRetractFloor = 0.75f
 
-/** `AnimationSpecUtils.kt:265` `MAX_WAIT_TIME_MILLIS`. */
-private const val ButtonGroupMaxWaitMillis = 1_000L
-
 private val ButtonGroupPressDownSpec: SpringSpec<Float> =
     spring<Float>(
         dampingRatio = ButtonGroupSpatialDampingRatio,
@@ -439,33 +447,6 @@ private val ButtonGroupPressUpSpec: SpringSpec<Float> =
         dampingRatio = ButtonGroupSpatialDampingRatio,
         stiffness = ButtonGroupStandardSlowStiffness,
     )
-
-/**
- * `AnimationSpecUtils.kt:194` `waitUntil`, including its bail-out: it polls per frame and gives up
- * after [ButtonGroupMaxWaitMillis] rather than hanging.
- *
- * Both halves of upstream's release branch are reproduced, and the pairing is what makes the
- * bail-out load-bearing: `collectLatest` cancels the running branch when the next value arrives, and
- * `ButtonGroup.kt:464` launches the grow *inside* that branch, so the release cancels the only
- * animation that can raise the value it then waits for. A touch shorter than the ~36 ms the 5600f
- * spring takes to travel 0.75 therefore leaves the button frozen at its current expansion until the
- * one second cap fires.
- *
- * This is a bug, and upstream knows it elsewhere: `RoundButton.kt:114` and
- * `AnimatedToggleRoundedCornerShape.kt:130` write the same wait as
- * `waitUntil { !progress.isRunning || progress.value > MIN_REQUIRED_ANIMATION_PROGRESS }` and launch
- * their grow into a `rememberCoroutineScope()`, both of which make the wait terminate. The
- * `ButtonGroup` copy has neither escape hatch. It is ported as written because the criterion here is
- * fidelity, and because the difference is a one-second stall on a sub-36 ms tap, not a wrong width —
- * but this is the line to change if the integration pass would rather ship the corrected version.
- */
-private suspend fun buttonGroupWaitUntil(condition: () -> Boolean) {
-    val initialTimeMillis = withFrameMillis { it }
-    while (!condition()) {
-        val timeMillis = withFrameMillis { it }
-        if (timeMillis - initialTimeMillis > ButtonGroupMaxWaitMillis) return
-    }
-}
 
 /** Upstream converts dp to float pixels for both the expansion and the per-child minimums. */
 private fun buttonGroupDpToFloatPx(source: Dp, density: Float): Float =

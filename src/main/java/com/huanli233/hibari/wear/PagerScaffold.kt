@@ -28,7 +28,6 @@ import com.huanli233.hibari.ui.unit.IntSize
 import com.huanli233.hibari.ui.unit.LayoutDirection
 import com.huanli233.hibari.ui.uniqueKey
 import com.huanli233.hibari.ui.viewClass
-import com.huanli233.hibari.wear.view.WearPageIndicatorView
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,36 +41,46 @@ import kotlinx.coroutines.launch
  * Upstream's scaffold stacks a pager and a page indicator and coordinates the indicator's (and
  * `TimeText`'s) visibility with whether the pager is being paged. The stacking, the alignment, the
  * fade and [AnimatedPage]'s whole scale-and-scrim animation are ported; the coordination half is not,
- * because the plumbing it hangs on is not in Hibari.
+ * because the app-level registry it hangs on is not in Hibari.
  *
  * **Not ported** — `PagerScaffold.kt:312-330`, the head of `PagerScaffoldImpl`:
  * `LocalScaffoldState.current`, `screenContent.updateIfNeeded(key, timeText = null,
  * scrollInfoProvider)`, the `DisposableEffect { onDispose { removeScreen(key) } }`,
  * `UpdateIdlingDetectorIfNeeded()` and the `LaunchedEffect(screenIsActive, scaffoldState)` that adds or
- * removes the screen. That is the app scaffold's registry of "which screen is showing, what scrolls it,
- * is it idling", and Hibari has neither a `ScrollInfoProvider` nor a `LocalScaffoldState` — the same
- * absence [AppScaffold] records. What survives of the visibility rule is the pager half of `:337-338`,
- * `pagerState.isScrollInProgress`; `screenStage.value != ScreenStage.Idle` — the other half of that
- * `||`, which is what holds the indicator up while the idling detector still counts the wearer as
- * reading — cannot be evaluated here. So with [PagerScaffoldDefaults.FadeOutAnimationSpec] the
- * indicator fades as soon as the pager settles instead of after upstream's 2 s idle delay.
+ * removes the screen. That is the app scaffold's registry of "which screen is showing, what scrolls
+ * it, is it idling", and what is missing is the registry, **not** the scroll-info plumbing:
+ * [ScrollInfoProvider] is ported (`ScrollAway.kt:76-103`, all five values) and [ScreenStage] with it
+ * (`ScrollAway.kt:33-53`). Two things have no counterpart: `LocalScaffoldState` / `ScaffoldState` /
+ * `ScreenContent` themselves (`material3/Scaffold.kt:51-150`), and the `LocalScreenIsActive` the
+ * registry writes behind (`PagerScaffold.kt:323`), which `Pager.kt:573-576`, `WearPagerView.kt:104`
+ * and `WearSwipeToDismissView.kt:82` all record as absent. Upstream's
+ * `ScrollInfoProvider(pagerState)` factory (`PagerScaffold.kt:86`,
+ * `foundation/ScrollInfoProvider.kt:122-123`) has no counterpart either, and for a specific reason:
+ * its `isScrollable` reads `state.canScrollBackward || state.canScrollForward` (`:378-379`), the two
+ * `ScrollableState` accessors [PagerState] declares as not ported (`Pager.kt:211-216`).
+ *
+ * What survives of the visibility rule is the pager half of `:337-338`, `pagerState.isScrollInProgress`;
+ * `screenStage.value != ScreenStage.Idle` — the other half of that `||`, which is what holds the
+ * indicator up while the idling detector still counts the wearer as reading — cannot be evaluated
+ * here. So with [PagerScaffoldDefaults.FadeOutAnimationSpec] the indicator fades as soon as the pager
+ * settles instead of after upstream's 2 s idle delay (`material3/Scaffold.kt:120-126`, `IDLE_DELAY` at
+ * `:192`).
  */
 
 /**
  * One of the Wear Material3 scaffold components: the structure of a horizontal pager, with its page
- * indicator at the centre-end… of the bottom edge.
+ * indicator centred on the bottom edge.
  *
  * Ported from `PagerScaffold.kt:76-93`; the indicator alignment is `Alignment.BottomCenter` there
  * (`:91`).
  *
  * @param pagerState the state of the pager controlling the page content.
  * @param modifier the modifier to be applied to the scaffold.
- * @param pageIndicator the page indicator to display, or `null` for none. Upstream's default is a
- *   `HorizontalPageIndicator(pagerState)`; here that default deliberately reads only
- *   [PagerState.pageCount] at tune time, because a state read inside a `@Tunable` body subscribes the
- *   whole host subtree and the offset changes every frame of a drag — see
- *   [WearPagerIndicatorSlotView], which pushes the live numbers the way upstream's draw lambda reads
- *   them.
+ * @param pageIndicator the page indicator to display, or `null` for none. Upstream's default is
+ *   `{ HorizontalPageIndicator(pagerState) }` (`PagerScaffold.kt:80`) and that is the default here,
+ *   now that [HorizontalPageIndicator] takes a [PagerState] of its own: the live page numbers reach the
+ *   drawing pass through the indicator's own `bindState` channel — see [PageIndicatorImpl] — so the
+ *   slot no longer has to settle for a tune-time page count and a guessed current page.
  * @param pageIndicatorAnimationSpec null, so the indicator is visible at all times; pass
  *   [PagerScaffoldDefaults.FadeOutAnimationSpec] to show it only while paging.
  * @param content where the [HorizontalPager] goes.
@@ -81,7 +90,7 @@ fun HorizontalPagerScaffold(
     pagerState: PagerState,
     modifier: Modifier = Modifier,
     pageIndicator: (@Tunable () -> Unit)? = {
-        HorizontalPageIndicator(pageCount = pagerState.pageCount, currentPage = 0)
+        HorizontalPageIndicator(pagerState = pagerState)
     },
     pageIndicatorAnimationSpec: AnimationSpec<Float>? = null,
     content: @Tunable () -> Unit,
@@ -103,8 +112,10 @@ fun HorizontalPagerScaffold(
  *
  * @param pagerState the state of the pager controlling the page content.
  * @param modifier the modifier to be applied to the scaffold.
- * @param pageIndicator the page indicator, or `null` for none; see [HorizontalPagerScaffold] for why
- *   the default reads only the page count.
+ * @param pageIndicator the page indicator, or `null` for none; upstream's default is
+ *   `{ VerticalPageIndicator(pagerState) }` (`PagerScaffold.kt:137`), and see
+ *   [HorizontalPagerScaffold] for how its numbers reach the drawing pass now that the indicator takes
+ *   a [PagerState].
  * @param pageIndicatorAnimationSpec null keeps the indicator visible; see [HorizontalPagerScaffold].
  * @param content where the [VerticalPager] goes.
  */
@@ -113,7 +124,7 @@ fun VerticalPagerScaffold(
     pagerState: PagerState,
     modifier: Modifier = Modifier,
     pageIndicator: (@Tunable () -> Unit)? = {
-        VerticalPageIndicator(pageCount = pagerState.pageCount, currentPage = 0)
+        VerticalPageIndicator(pagerState = pagerState)
     },
     pageIndicatorAnimationSpec: AnimationSpec<Float>? = null,
     content: @Tunable () -> Unit,
@@ -146,6 +157,13 @@ private fun PagerScaffoldImpl(
             // Upstream's `Modifier.align(pageIndicatorAlignment)` (`:341`) is applied by the slot view
             // itself, which is what lets the end-alignment resolve against the layout direction; the
             // caller's slot is not handed a `BoxScope`, having no use for `align` any more.
+            //
+            // This view carries the fade and the alignment only — upstream's `AnimatedIndicator`
+            // (`material3/Scaffold.kt:152-188`) plus that `align`. The page numbers are the
+            // indicator's own business now that [HorizontalPageIndicator] and [VerticalPageIndicator]
+            // take a [PagerState]: the default slot binds them on itself, and a caller-supplied slot
+            // that does not bind anything simply does not move, which is also what upstream's
+            // `pageIndicator` parameter does with a slot that reads no state.
             Node(
                 modifier = Modifier
                     .matchParentSize()
@@ -160,11 +178,7 @@ private fun PagerScaffoldImpl(
                     ) { this.fadeAnimationSpec = it }
                     .bindState(uniqueKey, pagerState.scrollValues) {
                         (this as WearPagerIndicatorSlotView).onScrollValues(it)
-                    }
-                    .thenViewAttribute<WearPagerIndicatorSlotView, PagerState>(
-                        uniqueKey,
-                        pagerState,
-                    ) { bindPagerState(it) },
+                    },
                 content = indicator,
             )
         }
@@ -275,8 +289,10 @@ object PagerScaffoldDefaults {
      * (`PagerScaffold.kt:294-298`).
      *
      * The value is `INDICATOR_FADE_OUT_ANIMATION`, `spring(stiffness = Spring.StiffnessMediumLow)`
-     * (`material3/Scaffold.kt:231-232`); that declaration is file-private to `Scaffold.kt` and this
-     * port's `Scaffold.kt` has no such member, so the same spring is written out here.
+     * (`material3/Scaffold.kt:231-232`); that declaration is file-`internal` there and unreachable
+     * from a source set that may not import `androidx.compose.*`, and this port's `Scaffold.kt` keeps
+     * its own private copy for the scroll-indicator slot (`INDICATOR_FADE_OUT_ANIMATION` there), so
+     * the same spring is written out here as the public value upstream exposes through this name.
      */
     val FadeOutAnimationSpec: AnimationSpec<Float> =
         spring<Float>(stiffness = Spring.StiffnessMediumLow)
@@ -341,10 +357,10 @@ private fun pagerLerp(start: Float, stop: Float, fraction: Float): Float =
  *    spec it starts at alpha 0 (`Scaffold.kt:166`) and animates to 1 while the pager is scrolling and
  *    back to 0 when it settles (`Scaffold.kt:167-181`'s `snapshotFlow { isVisible() }` + `animate`).
  *    The input is only [PagerState.isScrollInProgress] — see the file KDoc for the missing half.
- *  - The live page numbers are pushed onto the descendant [WearPageIndicatorView]'s `spec` rather than
- *    re-tuned through the subtree, because the whole point of upstream's indicator is that it reads the
- *    offset inside its draw pass; `HorizontalPageIndicator`'s parameters here are the tune-time values
- *    and are corrected on the first frame, and again on every `onLayout`.
+ *  - It no longer feeds the indicator any page numbers. Upstream's indicator reads
+ *    `currentPage`/`currentPageOffsetFraction` inside its own draw pass
+ *    (`material3/PageIndicator.kt:219`), and [PageIndicatorImpl] now does the same for itself, so this
+ *    view is only the `AnimatedIndicator` half — the box, the alignment and the alpha.
  */
 class WearPagerIndicatorSlotView @JvmOverloads constructor(
     context: Context,
@@ -380,8 +396,6 @@ class WearPagerIndicatorSlotView @JvmOverloads constructor(
             }
         }
 
-    private var pagerState: PagerState? = null
-    private var cachedIndicator: WearPageIndicatorView? = null
     private var lastScrolling: Boolean? = null
     private var fadeJob: Job? = null
     private var childLeft = 0
@@ -389,21 +403,11 @@ class WearPagerIndicatorSlotView @JvmOverloads constructor(
     private val animationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     /**
-     * Bound by [ScreenScaffold]'s page indicator through a state-valued attribute, so it re-runs
-     * whenever a *different* [PagerState] is handed over. It is deliberately not a `Modifier.ref`: a
-     * `ref` only runs when the view is created (`Renderer.kt:162`), which would leave the indicator
-     * counting intervals on a state the caller has since replaced.
+     * The `bindState` channel: one frame of the pager's scroll position, of which this view uses only
+     * [PagerScroll.isScrollInProgress] — the fade's input. The page numbers go to the indicator itself;
+     * see the class KDoc.
      */
-    fun bindPagerState(state: PagerState) {
-        if (pagerState === state) return
-        pagerState = state
-        lastScrolling = null
-        cachedIndicator = null
-    }
-
-    /** The `bindState` channel: one frame of the pager's scroll position. */
     internal fun onScrollValues(values: PagerScroll) {
-        pushValues(values)
         syncFade(values.isScrollInProgress)
     }
 
@@ -434,34 +438,6 @@ class WearPagerIndicatorSlotView @JvmOverloads constructor(
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         val child = singleChild() ?: return
         child.layout(childLeft, childTop, childLeft + child.measuredWidth, childTop + child.measuredHeight)
-        val state = pagerState ?: return
-        // Read from `onLayout`, not from the tune: the tune scope is closed by now, so this snapshot
-        // read subscribes nothing and the first frame after a retune shows the page the pager is on.
-        pushValues(state.peekScroll())
-    }
-
-    private fun pushValues(values: PagerScroll) {
-        val state = pagerState ?: return
-        val indicator = cachedIndicator ?: findIndicator().also { cachedIndicator = it } ?: return
-        val base = indicator.spec ?: return
-        val next = base.copy(
-            pageCount = state.pageCount,
-            currentPage = values.currentPage,
-            currentPageOffsetFraction = values.currentPageOffsetFraction,
-        )
-        if (next != base) indicator.spec = next
-    }
-
-    private fun findIndicator(): WearPageIndicatorView? {
-        val child = singleChild() ?: return null
-        if (child is WearPageIndicatorView) return child
-        if (child is ViewGroup) {
-            for (i in 0 until child.childCount) {
-                val nested = child.getChildAt(i)
-                if (nested is WearPageIndicatorView) return nested
-            }
-        }
-        return null
     }
 
     /**
@@ -529,9 +505,11 @@ class WearPagerAnimatedPageView @JvmOverloads constructor(
     private val scrimPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     /**
-     * Bound by [AnimatedPage] through a state-valued attribute rather than a `Modifier.ref`, for the
-     * same reason as `WearPagerIndicatorSlotView.bindPagerState`: a `ref` runs only at view creation
-     * (`Renderer.kt:162`) and would keep quantising against a replaced state.
+     * Bound by [AnimatedPage] through a state-valued attribute rather than a `Modifier.ref`, because a
+     * `ref` runs only at view creation (`Renderer.kt:162`) and would keep quantising against a state
+     * the caller has since replaced. The page indicator no longer needs the same treatment: it takes
+     * the [PagerState] itself and binds the scroll channel on its own view — see
+     * [PageIndicatorImpl].
      */
     fun bindPagerState(state: PagerState) {
         pagerState = state

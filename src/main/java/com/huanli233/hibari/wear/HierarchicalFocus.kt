@@ -5,9 +5,6 @@ import android.view.ViewGroup
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.thenViewAttribute
 import com.huanli233.hibari.ui.uniqueKey
-import java.lang.ref.WeakReference
-import java.util.Collections
-import java.util.WeakHashMap
 
 /**
  * Ported from `androidx.wear.compose.foundation.HierarchicalFocus`.
@@ -139,10 +136,20 @@ fun Modifier.hierarchicalFocusRequester(requester: HierarchicalFocusRequester): 
  * schedules nothing, which matters because a lambda-valued element ([hierarchicalOnFocusChanged])
  * never compares equal and is therefore re-applied on every re-tune.
  *
- * Keying the node by View is safe because the patcher pairs a slot with its own view
- * (`Patcher.kt:136`, `findViewByKey(newNode.key, position)`) and re-applies the whole modifier list
- * when it has to build a fresh one, so a node's `active` cannot be left over from another slot the
- * way it could in a plain adapter-backed recycling group.
+ * Keying the node by View is safe because of a rule in the runtime, not a hope: an element that
+ * *leaves* a slot's modifier chain forces the View to be rebuilt, so [groupActive] / [declared] /
+ * [focusSite] can never outlive the element that wrote them. `HibariDiffCallback.getChangePayload`
+ * answers that shape with a null payload (`hibari-runtime/.../HibariDiffCallback.kt:170-173`, "an
+ * attribute that left the chain took its value with it while the view still shows it, so the view has
+ * to be rebuilt"), and `Patcher.applyChange` treats a null payload as remove-and-render
+ * (`Patcher.kt:161-167`), the renderer then applying the whole new chain to the fresh View
+ * (`Renderer.kt:156-161`) — a View with no focus tag, so a brand-new node. What reaches a reused View
+ * is only a *value* change on an element that stayed (`Patcher.kt:136`, `findViewByKey(newNode.key,
+ * position)` pairs slot with view), which is exactly the update these setters model. Lazy rows obey
+ * the same rule: every tune — screen or `HibariViewHolder.bind` — enters through
+ * `Patcher.patch(hostView, oldNodeTree, newNodeTree)` (`TuneController.kt:35`), and
+ * `recycle()` (`hibari-recyclerview/.../HibariViewHolder.kt:30-36`) empties the container, so a row
+ * never hands its views to another item's keys.
  */
 internal class HierarchicalFocusNode(val view: View) {
 
@@ -261,24 +268,59 @@ internal class HierarchicalFocusNode(val view: View) {
 }
 
 /**
- * Per-View node store.
+ * Per-View node store: the node hangs off its own View as a keyed tag, declared in this module's
+ * `res/values/ids.xml` — the same shape as `StateBinding.kt:42-44` in `hibari-runtime` (get-or-create
+ * over a class that holds its own View) and the slots of `hibari-material`'s `ids.xml`, read as a
+ * file-private key at `hibari-material/src/main/java/com/huanli233/hibari/material/EditText.kt:17`.
  *
- * `View.setTag(int, Object)` is not usable here: it rejects any key whose package id is below 2, so
- * it needs a real resource id, and this module owns no `res/` (and may not add one). The store is
- * therefore a weak map, with the node itself held through a `WeakReference` so a recycled-but-dropped
- * View can never be pinned by a value that points back at it.
+ * A real resource id is what the platform demands, not a nicety: `View.setTag(int, Object)` throws
+ * `IllegalArgumentException` unless `key >>> 24 >= 2` (frameworks/base
+ * `core/java/android/view/View.java:28068-28074`), while `View.getTag(int)` answers `null` cleanly when
+ * nothing is set for the key (`:28042-28045`), so the read needs no sentinel and no contains-check.
+ * `View.generateViewId()` does **not** qualify: it is clamped to 0x00000001..0x00FFFFFF exactly so it
+ * cannot collide with an aapt-generated id (`:30845-30855`), and a high byte of 0 is the rejected case.
+ *
+ * The store used to be a process-wide synchronized `WeakHashMap`, locked on every lookup, and both
+ * reads below are hot: [hierarchicalFocusNodeOrNull] runs once per descendant View on each
+ * `childNodes()` walk a resolve does. A tag is a field of the View, so the lock and the map are gone.
  */
-private val HierarchicalFocusNodes =
-    Collections.synchronizedMap(WeakHashMap<View, WeakReference<HierarchicalFocusNode>>())
+private val hierarchicalFocusNodeKey = R.id.hibari_hierarchical_focus_node
 
+/**
+ * The node of this View, created on first use and then kept for the View's whole lifetime.
+ *
+ * That lifetime is why nothing here needs weak bookkeeping:
+ *
+ *  - The node is reachable only from its own View and from the coordinator's two node lists
+ *    (`HierarchicalFocusCoordinator.kt:73-74` — `changedNodes` is emptied at the end of every resolve,
+ *    `lastActiveNodePath` holds just the current path), so a View nothing points at takes its node with
+ *    it and the store drops it in the same move. The `WeakReference` value was not decoration *in that
+ *    design* — a strong map value pointing back at the key is exactly how a `WeakHashMap` ends up
+ *    pinning its keys — but a tag has no table edge to pin through, so the concern does not carry over.
+ *  - [HierarchicalFocusNode.view] is a strong `val` and the View now holds the node strongly too: a
+ *    reference cycle, and an unreachable cycle is collected like any other garbage. That cycle already
+ *    existed, because the attach listener below captures the node and lives on the View — which is
+ *    also why the weak value could never clear while its View was alive, recycled or not.
+ *  - Nothing enumerated the map. The tree is walked through the real View links — up via
+ *    [HierarchicalFocusNode.parentNode], down via [collectHierarchicalFocusDescendants] — and
+ *    `HierarchicalFocusCoordinator.kt` never touches this store, so replacing the backing changes no
+ *    traversal.
+ *  - A recycled View keeps its node, as it did before, and it has to: the attach listener is installed
+ *    once per View, so a fresh node per bind would stack a second listener and leave the stale one
+ *    still reporting detaches. Keeping it cannot strand a slot's state either, for the rule on
+ *    [HierarchicalFocusNode]: an element that leaves the chain rebuilds the View, so a node is only
+ *    ever re-read through an element that is still on it.
+ *
+ * `View`'s keyed tags are a plain `SparseArray`, so this store is not thread-safe. It was already
+ * main-thread-confined in practice — [HierarchicalFocusNode.markChanged] feeds the coordinator's
+ * unsynchronized `changedNodes` list — so the old lock guarded a structure no other thread touched.
+ */
 internal fun View.hierarchicalFocusNode(): HierarchicalFocusNode {
-    synchronized(HierarchicalFocusNodes) {
-        HierarchicalFocusNodes[this]?.get()?.let { return it }
-    }
+    (getTag(hierarchicalFocusNodeKey) as? HierarchicalFocusNode)?.let { return it }
     val created = HierarchicalFocusNode(this)
     // Upstream's onAttach/onDetach overrides: a node entering the tree re-enters the candidate set,
     // and one leaving it takes its share of the active path with it. Added once, for the lifetime of
-    // the View, because this map hands back the same node for the same View.
+    // the View, because this tag hands back the same node for the same View.
     addOnAttachStateChangeListener(
         object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(view: View) {
@@ -292,12 +334,12 @@ internal fun View.hierarchicalFocusNode(): HierarchicalFocusNode {
             }
         }
     )
-    HierarchicalFocusNodes[this] = WeakReference(created)
+    setTag(hierarchicalFocusNodeKey, created)
     return created
 }
 
 internal fun View.hierarchicalFocusNodeOrNull(): HierarchicalFocusNode? =
-    HierarchicalFocusNodes[this]?.get()
+    getTag(hierarchicalFocusNodeKey) as? HierarchicalFocusNode
 
 private fun View.collectHierarchicalFocusDescendants(out: MutableList<HierarchicalFocusNode>) {
     if (this !is ViewGroup) return

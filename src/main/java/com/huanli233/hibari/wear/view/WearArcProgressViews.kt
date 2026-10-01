@@ -29,26 +29,110 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /*
- * Drawing views for SegmentedCircularProgressIndicator and ArcProgressIndicator.
+ * Drawing views for SegmentedCircularProgressIndicator and ArcProgressIndicator, and the shared
+ * segment routine every circular indicator in this module draws through.
  *
  * Upstream draws both with `DrawScope` extensions (`drawIndicatorSegment` and `drawIndicatorArc` in
- * `material3/ProgressIndicator.kt`); those two routines are reproduced here as private members, the
- * arc maths unchanged: `gapSweep = asin((stroke + gap) / (min - stroke))` doubled, and a segment
- * narrower than its own gap degrades into a shrinking, fading dot instead of disappearing. The dot
- * branch fills, so Paint.Style is switched per call.
+ * `material3/ProgressIndicator.kt:301-348`, `:398-425`); [drawIndicatorSegment] here is that first
+ * routine, the arc maths unchanged: `gapSweep = asin((stroke + gap) / (min - stroke))` doubled, and a
+ * segment narrower than its own gap degrades into a shrinking, fading dot instead of disappearing. The
+ * dot branch fills, so `Paint.Style` is switched per call.
  *
- * `drawIndicatorSegment` is a deliberate private duplicate of the routine already living in
- * WearCircularProgressView: that class is not this port's to widen (it lacks upstream's
- * `strokePadding` term), and a shared public helper would collide with the other in-flight ports.
+ * It is `internal` and shared, not a per-view copy: [WearCircularProgressView] used to carry its own
+ * version of the same maths, minus upstream's `strokePadding` term and with the dot drawn in the
+ * stroke style — a ring instead of the filled dot upstream shows for a small progress value. Both
+ * views now call this one.
  *
  * Motion, not just rendering, lives here: upstream drives progress with an `Animatable` timed by
- * `MaterialTheme.motionScheme`. This module has that member, but a `Drawable`/`View` is not a tunable
- * body, so the local behind it cannot be read from here — the specs are reproduced from their own
- * constants instead, which is what `MotionScheme.standard()` hands out — see SpringCurve. One
- * difference cuts the other way: because the motion runs on ValueAnimator, it obeys the platform
- * animator duration scale ("no animations" in developer options), which Compose's frame-clock driven
- * animations ignore.
+ * `MaterialTheme.motionScheme`. These two views cannot read that local themselves — a `Drawable`/`View`
+ * is not a tunable body — so their springs are reproduced from the stiffness constants
+ * `MotionScheme.standard()` resolves to; see SpringCurve. That is this file's choice, not a limit of the
+ * engine: `WearCircularProgressView` takes the real spec objects instead, resolved at tune in
+ * `ProgressIndicator.kt` and carried in as attribute data (`CircularProgressMotion`), and runs them on
+ * the ported `Animatable`. What the two routes still differ on is the platform animator duration scale
+ * ("no animations" in developer options): a ValueAnimator obeys it, while a frame-clock spring does not,
+ * because `SuspendAnimation.kt:309-314` takes the scale from a `MotionDurationScale` context element that
+ * no Hibari scope installs (see `WearCircularProgressView`'s header).
  */
+
+/**
+ * `GapExtraProgress` (`CircularProgressIndicator.kt:611`): the extra progress a full circle is pushed
+ * to so the merge animation has something to unwind.
+ */
+internal const val GapExtraProgress = 0.05f
+
+/**
+ * `gapSweep` from `drawCircularProgressIndicator` (`CircularProgressIndicator.kt:277`) and the two
+ * indeterminate routines: the angular gap between an indicator's end cap and the track's, for a stroke
+ * of [strokePx], a gap of [gapPx] and a drawing area of [minSize].
+ *
+ * Upstream hands the ratio straight to `asin()`, and outside [-1, 1] that is NaN, which propagates
+ * into every angle and draws nothing. The degenerate ratio is clamped instead, so a stroke that fills
+ * its own circle still renders; callers guard the impossible case beforehand.
+ */
+internal fun gapSweepFor(strokePx: Float, gapPx: Float, minSize: Float): Float {
+    val ratio = ((strokePx + gapPx) / (minSize - strokePx)).coerceIn(0f, 1f)
+    return Math.toDegrees(asin(ratio).toDouble()).toFloat() * 2f
+}
+
+/**
+ * `DrawScope.drawIndicatorSegment` (`material3/ProgressIndicator.kt:301-348`) on a `Canvas`, sized to
+ * its own bounds and painting with a caller-owned [paint] — a draw routine must not allocate one.
+ *
+ * [strokePadding] is upstream's parameter of the same name (`:307`), used by the segmented indicator
+ * to widen the progress stroke by a pixel so it cannot leave a seam over the track arc
+ * (`SegmentedCircularProgressIndicator.kt`'s `AntiAliasingStrokePadding`, b/381865505).
+ */
+internal fun Canvas.drawIndicatorSegment(
+    paint: Paint,
+    startAngle: Float,
+    sweep: Float,
+    gapSweep: Float,
+    color: Color,
+    strokeWidth: Float,
+    strokePadding: Float = 0f,
+) {
+    if (color.isUnspecified || sweep <= 0f) return
+    val minSide = min(width, height).toFloat()
+    paint.color = color.toArgb()
+
+    if (sweep <= gapSweep) {
+        // Too narrow to be an arc: a dot centred on the segment's own angle, shrunk and faded by how
+        // far below the gap it fell. Filled, as `drawCircle` is upstream.
+        val angle = Math.toRadians((startAngle + sweep / 2f).toDouble()).toFloat()
+        val radius = minSide / 2 - strokeWidth / 2
+        val circleRadius = ((strokeWidth + strokePadding) / 2) * sweep / gapSweep
+        val alphaScale = (circleRadius / strokeWidth * 2f).coerceAtMost(1f)
+        val style = paint.style
+        paint.style = Paint.Style.FILL
+        paint.alpha = (color.alpha * 255f * alphaScale).toInt().coerceIn(0, 255)
+        drawCircle(
+            radius * cos(angle) + minSide / 2,
+            radius * sin(angle) + minSide / 2,
+            circleRadius,
+            paint,
+        )
+        paint.style = style
+        paint.alpha = (color.alpha * 255f).toInt().coerceIn(0, 255)
+    } else {
+        // A stroked arc, inset by half the stroke so the round caps stay inside the bounds.
+        val diameterOffset = strokeWidth / 2
+        val arcDimen = minSide - 2 * diameterOffset
+        val left = diameterOffset + (width - minSide) / 2f
+        val top = diameterOffset + (height - minSide) / 2f
+        paint.strokeWidth = strokeWidth + strokePadding
+        drawArc(
+            left,
+            top,
+            left + arcDimen,
+            top + arcDimen,
+            startAngle + gapSweep / 2,
+            sweep - gapSweep,
+            false,
+            paint,
+        )
+    }
+}
 
 /** `MotionScheme` effects spring stiffnesses; upstream `internal` in MaterialTheme's MotionScheme. */
 private const val EffectsSlowStiffness = 260f
@@ -161,8 +245,12 @@ private class OverflowCurve(
     }
 }
 
-/** `wrapProgress`: 1.2 wraps to 0.2 once overflow is allowed, whole values above 1 read as 1.0. */
-private fun wrapProgress(progress: Float, allowProgressOverflow: Boolean): Float {
+/**
+ * `wrapProgress` (`material3/ProgressIndicator.kt:361-370`): 1.2 wraps to 0.2 once overflow is
+ * allowed, whole values above 1 read as 1.0. Internal rather than private because
+ * [com.huanli233.hibari.wear.drawCircularProgressIndicator] runs the same rule.
+ */
+internal fun wrapProgress(progress: Float, allowProgressOverflow: Boolean): Float {
     if (!allowProgressOverflow) return progress.coerceIn(0f, 1f)
     if (progress <= 0.0f) return 0.0f
     if (progress <= 1.0f) return progress
@@ -195,7 +283,6 @@ class WearSegmentedCircularProgressView @JvmOverloads constructor(
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
     }
-    private val oval = RectF()
 
     private var currentSpec: SegmentedCircularProgressSpec? = null
     private var initialized = false
@@ -244,10 +331,7 @@ class WearSegmentedCircularProgressView @JvmOverloads constructor(
         if (strokePx <= 0f || minSide <= strokePx * 2f) return
 
         val gapPx = spec.gapSize.value * resources.displayMetrics.density
-        // Upstream hands the ratio straight to asin(); outside [-1, 1] that is NaN and nothing draws,
-        // so the degenerate ratio is clamped instead.
-        val ratio = ((strokePx + gapPx) / (minSide - strokePx)).coerceIn(0f, 1f)
-        val gapSweep = Math.toDegrees(asin(ratio).toDouble()).toFloat() * 2f
+        val gapSweep = gapSweepFor(strokePx, gapPx, minSide)
 
         val segmentCount = spec.segmentCount
         val fullSweep = 360f - ((spec.startAngle - spec.endAngle) % 360 + 360) % 360
@@ -354,7 +438,7 @@ class WearSegmentedCircularProgressView @JvmOverloads constructor(
         }
     }
 
-    /** `DrawScope.drawIndicatorSegment`: one stroked arc, or a shrinking faded dot when too narrow. */
+    /** [drawIndicatorSegment], with this view's paint and bounds. See [WearCircularProgressView]. */
     private fun drawSegment(
         canvas: Canvas,
         startAngle: Float,
@@ -364,37 +448,7 @@ class WearSegmentedCircularProgressView @JvmOverloads constructor(
         strokePx: Float,
         strokePadding: Float,
     ) {
-        if (color.isUnspecified || sweep <= 0f) return
-        arcPaint.color = color.toArgb()
-
-        val minSide = min(width, height).toFloat()
-        if (sweep <= gapSweep) {
-            val angle = Math.toRadians((startAngle + sweep / 2f).toDouble()).toFloat()
-            val radius = minSide / 2 - strokePx / 2
-            val circleRadius = ((strokePx + strokePadding) / 2) * sweep / gapSweep
-            val alphaScale = (circleRadius / strokePx * 2f).coerceAtMost(1f)
-            arcPaint.style = Paint.Style.FILL
-            arcPaint.alpha = (color.alpha * 255f * alphaScale).toInt().coerceIn(0, 255)
-            canvas.drawCircle(
-                radius * cos(angle) + minSide / 2,
-                radius * sin(angle) + minSide / 2,
-                circleRadius,
-                arcPaint,
-            )
-            arcPaint.style = Paint.Style.STROKE
-            arcPaint.alpha = (color.alpha * 255f).toInt().coerceIn(0, 255)
-        } else {
-            val diameterOffset = strokePx / 2
-            val arcDimen = minSide - 2 * diameterOffset
-            oval.set(
-                diameterOffset + (width - minSide) / 2f,
-                diameterOffset + (height - minSide) / 2f,
-                diameterOffset + (width - minSide) / 2f + arcDimen,
-                diameterOffset + (height - minSide) / 2f + arcDimen,
-            )
-            arcPaint.strokeWidth = strokePx + strokePadding
-            canvas.drawArc(oval, startAngle + gapSweep / 2, sweep - gapSweep, false, arcPaint)
-        }
+        canvas.drawIndicatorSegment(arcPaint, startAngle, sweep, gapSweep, color, strokePx, strokePadding)
     }
 
     private fun updateDeterminate(newSpec: SegmentedCircularProgressSpec) {

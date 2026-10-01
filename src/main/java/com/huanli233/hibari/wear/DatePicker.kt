@@ -43,7 +43,6 @@ import com.huanli233.hibari.foundation.ColumnScope
 import com.huanli233.hibari.foundation.Node
 import com.huanli233.hibari.foundation.Row
 import com.huanli233.hibari.foundation.Spacer
-import com.huanli233.hibari.foundation.attributes.alpha
 import com.huanli233.hibari.foundation.attributes.height
 import com.huanli233.hibari.foundation.attributes.matchParentHeight
 import com.huanli233.hibari.foundation.attributes.matchParentSize
@@ -53,6 +52,7 @@ import com.huanli233.hibari.foundation.attributes.size
 import com.huanli233.hibari.foundation.attributes.text
 import com.huanli233.hibari.foundation.attributes.width
 import com.huanli233.hibari.runtime.Tunable
+import com.huanli233.hibari.runtime.bindState
 import com.huanli233.hibari.runtime.currentContext
 import com.huanli233.hibari.runtime.effects.LaunchedEffect
 import com.huanli233.hibari.runtime.getValue
@@ -126,8 +126,14 @@ import kotlin.text.format
  *    surface. `selectableGroup()`, `stateDescription` and `Modifier.onGloballyPositioned` are **not**
  *    in upstream's DatePicker at all, so nothing about them is missing here.
  *  - `FadeLabel` (:285-301, `material3/AnimationSpecUtils.kt:215-253`) cross-fades the heading when
- *    the text changes; it needs `FiniteAnimationSpec.faster(200f)`, which hibari-animation does not
- *    carry, so the heading switches at once. Same gap [TimePicker] documents for the same call.
+ *    the text changes; here the heading switches at once. This is **not** a blocked port, whatever the
+ *    gap this bullet used to name said: the `animationSpec.faster(200f)` at `:238` is [faster], which
+ *    is this module's own (`AnimationSpecUtils.kt`), the `defaultEffectsSpec()` the call passes at
+ *    :287 resolves through [MaterialTheme.motionScheme], and [Text], `Animatable`, `LaunchedEffect`
+ *    and `LocalTextConfiguration` (now `TextConfiguration.kt:23`) are all here. It is unwritten, and
+ *    `AnimationSpecUtils.kt`'s own file comment keeps the list of what writing it takes — including
+ *    that the fading alpha must reach the view through `bindState`, the way this file's entry fade
+ *    does, rather than through a tune-body read. [TimePicker] documents the same dropped call.
  *  - `@Immutable` on `DatePickerColors` (:698) and on `DatePickerType` (:584): androidx.compose
  *    .runtime has no Hibari counterpart, so the annotations are dropped. Nothing else about either
  *    class changes; the colours still hold eight immutable [Color]s and compare by all eight.
@@ -342,7 +348,14 @@ public fun DatePicker(
         }
     }
 
-    Box(modifier = modifier.matchParentSize().alpha(fullyDrawn.value)) {
+    // Reading `fullyDrawn.value` here would re-tune this whole body — heading, the three columns and
+    // the edge button — once per frame of the entry fade. Alpha is a plain view property, so the
+    // animatable is bound to the view instead, the way `TimePicker.kt` binds its own entry fade.
+    Box(
+        modifier = modifier
+            .matchParentSize()
+            .bindState(uniqueKey, fullyDrawn.asState()) { this.alpha = it },
+    ) {
         val heading =
             selectedIndex?.let {
                 when (datePickerOptions.getOrNull(it)) {
@@ -946,8 +959,8 @@ private fun Modifier.datePickerText(spec: TimePickerTextSpec): Modifier =
 
 /**
  * Upstream's `Icons.Check` (:561) and `Icons.AutoMirrored.KeyboardArrowRight` (:563) as one
- * [Drawable]: `Icon` can only tint what the framework hands back, and this module ships no drawable
- * resources, so the two glyphs are drawn from the same path data on a 960-unit viewport
+ * [Drawable]: upstream builds them as `ImageVector`s through compose-ui's icon DSL, which has no
+ * counterpart here, so the two glyphs are drawn from the same path data on a 960-unit viewport
  * (`internal/Icons.kt:95-122` and `:168-194`). The colour is carried by the drawable rather than by
  * the `ImageView`'s colour filter, which a hand-built [Drawable] would ignore.
  */

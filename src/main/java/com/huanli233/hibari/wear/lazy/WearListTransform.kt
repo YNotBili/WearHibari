@@ -145,12 +145,15 @@ object WearListTransformDefaults {
 
 /**
  * `LinearLayoutManager` exposes `canScrollVertically()` but no setter, so `userScrollEnabled = false`
- * has to come from a subclass rather than a property write.
+ * has to come from a subclass rather than a property write. The flag is a `var` because
+ * `canScrollVertically()` is consulted per gesture (`scrollBy`, `nestedScrollByInternal`,
+ * `onInterceptTouchEvent`, `fling`), so writing it is the live path: replacing the layout manager
+ * instead would stop an in-flight fling and recycle every row, which is not what upstream's flag does.
  */
 class WearScrollableLinearLayoutManager(
     context: Context,
     callback: WearableLinearLayoutManager.LayoutCallback,
-    private val scrollEnabled: Boolean,
+    var userScrollEnabled: Boolean,
 ) : WearableLinearLayoutManager(context, callback) {
-    override fun canScrollVertically(): Boolean = scrollEnabled
+    override fun canScrollVertically(): Boolean = userScrollEnabled
 }

@@ -28,6 +28,7 @@ import com.huanli233.hibari.ui.graphics.Color
 import com.huanli233.hibari.ui.layout.Alignment
 import com.huanli233.hibari.ui.layout.Arrangement
 import com.huanli233.hibari.ui.thenViewAttribute
+import com.huanli233.hibari.ui.text.TextAlign
 import com.huanli233.hibari.ui.text.TextStyle
 import com.huanli233.hibari.ui.unit.Dp
 import com.huanli233.hibari.ui.unit.DpSize
@@ -38,16 +39,18 @@ import com.huanli233.hibari.wear.attributes.container
 import com.huanli233.hibari.wear.lazy.ListTransformParams
 import com.huanli233.hibari.wear.lazy.ScalingLazyColumn
 import com.huanli233.hibari.wear.lazy.ScalingLazyListState
+import com.huanli233.hibari.wear.lazy.TransformingLazyColumn
 import com.huanli233.hibari.wear.tokens.ColorSchemeKeyTokens
 import kotlin.math.ceil
 
 /**
  * Ported from androidx.wear.compose.material3.AlertDialog / AlertDialogContent. Upstream publishes
  * six `AlertDialog` overloads (`material3/AlertDialog.kt:130, :230, :312, :397, :486, :586`) and six
- * `AlertDialogContent` overloads (`:660, :768, :870, :961, :1055, :1146`). Three of each — the
- * `transformationSpec: TransformationSpec` variants — are not ported, for the reason below; the
- * other three of each are, with [Dialog] in place of upstream's `Dialog` and its content body
- * shared the way upstream shares `AlertDialogContentFixed*` against the scrollable layout.
+ * `AlertDialogContent` overloads (`:660, :768, :870, :961, :1055, :1146`), all twelve ported, with
+ * [Dialog] in place of upstream's window `Dialog` and the content body shared the way upstream shares
+ * `AlertDialogContentFixed*` against the scrollable layout. The three `transformationSpec` pairs are
+ * ported against [ListTransformParams] instead of upstream's `TransformationSpec` — see the first
+ * bullet below for what that costs and what it does not.
  *
  * Window presentation still is not hibari-wear's job: [Dialog] is an in-place overlay, not a real
  * window, so there is no focus control and no outside-click dismissal here. What the overlay does
@@ -67,34 +70,92 @@ import kotlin.math.ceil
  * a [Dialog] the identical opaque colour simply lands twice.
  *
  * Further deviations, all in the same direction:
- *  - The `transformationSpec` overloads are not ported: `TransformationSpec` and
- *    `ResponsiveTransformationSpec` (androidx.wear.compose.material3.lazy) have no Hibari
- *    equivalent — this module's `TransformingLazyColumn` (lazy/WearLazyColumn.kt:145) takes a
- *    `ListTransformParams`, not a per-item spec — and [ScalingLazyColumn] is driven by
- *    [ListTransformParams] instead. Their `contentPadding: @Composable (Boolean) -> PaddingValues`
- *    shape goes with them; the padding functions that took the `isScrollable` flag are still
- *    exposed on [AlertDialogDefaults]. The `content` slots of those overloads, typed
- *    `TransformingLazyColumnScope`, have no scope to be typed with here; what exists
- *    ([LazyListScope]) is the [content] parameter the ported overloads carry.
- *  - `DynamicScrollableOrFixedLayout` (`material3/AlertDialog.kt:1474-1501`) is a `SubcomposeLayout`
- *    that measures the fixed layout unbounded and flips to a scrolling one when it overflows the
- *    viewport. Hibari nodes get one measure pass, so with `content == null` the fixed layout always
- *    wins: an icon + title + text dialog taller than the screen is clipped instead of becoming
- *    scrollable. Supplying a `content` slot picks the scrollable layout up front, which is also what
- *    upstream does. The `edgeButton` overloads need no such choice — upstream gives them a
- *    scrollable layout unconditionally, `content == null` included (`:1070-1073`), and so does this
- *    file.
- *  - The `edgeButton` overloads (`material3/AlertDialog.kt:486`, `:1055`) are ported, but without
- *    the scroll-linked reveal. Upstream hands the slot to a `ScreenScaffold` (`:1076-1086`) that
- *    grows and fades it as the list reaches its end (`material3/ScreenScaffold.kt:584-679`) driven
- *    by `scrollInfoProvider.lastItemOffset` (`:580-583`); this module's `ScalingLazyListState`
- *    carries no `layoutInfo` (lazy/WearLazyColumn.kt:36-87), so the button stands fully revealed.
- *    The same one-measure-pass gap stops upstream's runtime read of the slot's *intrinsic* height
- *    (`ScreenScaffold.kt:594-600`, folded into the list's bottom padding at `:610-624`): the inset
- *    here is computed for [AlertDialogDefaults.EdgeButton] — [EdgeButtonSize.Medium] plus the
- *    button's own top and bottom `EdgeButtonVerticalPadding` (view/WearEdgeButtonView.kt:186-194) —
- *    and a caller that passes a slot of a different size gets a different bottom inset than
- *    upstream's measurement would have produced.
+ *  - The three `transformationSpec` overloads take a [ListTransformParams] where upstream takes a
+ *    `TransformationSpec` (`lazy/TransformationSpec.kt:55-99`, `lazy/ResponsiveTransformationSpec.kt:47`).
+ *    The substitution is exact for everything this module can act on: upstream's spec is nine numbers
+ *    — `minElementHeightFraction`, `maxElementHeightFraction`, the two transition-area fractions, the
+ *    easing and the container/content alpha plus the item scale (`ResponsiveTransformationSpec.kt:93-114`
+ *    and `:160-181`) — and [ListTransformParams] carries each of them under its `ScalingLazyColumn`
+ *    name (`lazy/WearListTransform.kt:28-48`), with upstream's `smallScreen()` numbers being that
+ *    class's own defaults. What is genuinely not reachable is the three members whose signatures are
+ *    compose-ui types with no source in the reference tree: `GraphicsLayerScope.applyContentTransformation`
+ *    and `applyContainerTransformation` (`:73-84`) and `TransformedContainerPainterScope.createTransformedContainerPainter`
+ *    (`:94-98`). Two further consequences of that substitution are behavioural:
+ *      - the spec is one set for the whole list, because [com.huanli233.hibari.wear.lazy.TransformingLazyColumn]
+ *        takes `transformParams` once (`lazy/WearLazyColumn.kt:145-165`), so upstream's per-item
+ *        `Modifier.transformedHeight(...)` + `graphicsLayer` chain (`material3/AlertDialog.kt:1606-1658`,
+ *        `:1731-1744`) has no counterpart, and its `TopItemTransformationSpec`
+ *        (`material3/AlertDialog.kt:1799-1800`, the reduced `minTransitionAreaHeightFraction = 0.14f`
+ *        the first item gets when there is no icon) cannot be applied to that item alone. Its Hibari
+ *        value would be `ListTransformParams(minTransitionArea = 0.14f)`; the rest of upstream's spec
+ *        defaults are [ListTransformParams]'s own defaults.
+ *      - the `content` slots typed `TransformingLazyColumnScope` upstream are the [LazyListScope]
+ *        [content] every overload here already carries.
+ *    The `contentPadding: @Composable (Boolean) -> PaddingValues` shape of the buttonless pair
+ *    (`material3/AlertDialog.kt:968-974`, `:406-412`) is ported as a nullable
+ *    `(@Tunable (Boolean) -> PaddingValues)?`, resolved in the body because upstream's default calls
+ *    the `@Tunable` [AlertDialogDefaults.buttonStackContentPadding] family. Its `isScrollable`
+ *    argument is `content != null` here rather than the measured answer upstream passes at `:983` and
+ *    `:1017`, for the reason the next bullet gives.
+ *  - `DynamicScrollableOrFixedLayout` (`material3/AlertDialog.kt:1474-1501`) is not ported, and the
+ *    reason this file used to give for that — "Hibari nodes get one measure pass" — was **false**. A
+ *    measure policy is asked to lay its children out once per pass (`Renderer.kt:408-429`) but each
+ *    child may be *measured* as often as the policy likes: `ViewMeasurable` keys its cache on one
+ *    [Constraints] slot, re-measures whenever the constraints differ, and drops the slot at the start
+ *    of every pass (`Renderer.kt:424`, `:495-496`, `:531-542`), which is exactly the
+ *    measure-loose-then-measure-clamped shape upstream runs at `:1489`. A custom policy has also been
+ *    exercised against this host (`app/src/main/java/com/huanli233/hibari/sample/MeasureProbe.kt`,
+ *    added by `d189707`, with the host's child layout params fixed afterwards by `3e0ab6c`). So the
+ *    double measurement is expressible. What is not, today, is the *decision* — two named gaps:
+ *      - The host is never given the viewport. `Renderer.render` returns a `LayoutNodeHost` before it
+ *        reads the node's attributes (`Renderer.kt:97-104`): no `viewClass`, no `padding`, no
+ *        `matchParentSize()`, no `RefModifier`, none of them at creation — only the *changed* ones
+ *        arrive later, and only through `Patcher.applyChange` (`Patcher.kt:151-157`). A
+ *        `LayoutNodeHost` therefore keeps whatever its parent's `generateDefaultLayoutParams()` hands
+ *        it, and inside a [Column] (a vertical `LinearLayout`) that is `WRAP_CONTENT` height, so
+ *        `Constraints.fromMeasureSpec` (`Renderer.kt:378-390`) reports `maxHeight = Infinity` and
+ *        upstream's test `fixedMeasurable.height > constraints.maxHeight` (`AlertDialog.kt:1490`)
+ *        can never be true. **The fix is in `hibari-runtime`, in `Renderer.render(node, parent)`** at
+ *        those lines: give the host the layout params the view path builds at `Renderer.kt:142-151`
+ *        and run the same attribute walk (`:158-163`) and `RefModifier` pass (`:165`) over it, and
+ *        `Modifier.matchParentSize()` on the host becomes the viewport-clamped box upstream measures
+ *        inside.
+ *      - The unbounded question itself is malformed on the way down. Upstream asks it as
+ *        `constraints.copy(maxHeight = Constraints.Infinity)` (`:1489`), and this engine converts
+ *        constraints to a measure spec by comparing only `min` and `max`
+ *        (`hibari-ui/src/main/java/com/huanli233/hibari/ui/unit/Constraints.kt:188-196`) with no
+ *        unbounded branch, so `Constraints.Infinity` (`Int.MAX_VALUE`, `Constraints.kt:213`) is passed
+ *        to `View.MeasureSpec.makeMeasureSpec`, whose documented size range is
+ *        `0 .. (1 shl 30) - 1`, instead of `MeasureSpec.UNSPECIFIED`. **The fix is in `hibari-ui`**, in
+ *        `Constraints.toWidthMeasureSpec` / `toHeightMeasureSpec`.
+ *    One more thing the port has to give up either way, and it is structural rather than a bug:
+ *    upstream's answer decides *which subtree is composed* (the `subcompose` at `:1493-1497` picks
+ *    between two slot lambdas), while a measure policy can only choose among the children the tune
+ *    already emitted. The shape that would carry it is a policy that measures the `forMeasure` child
+ *    loose and writes `isScrollable` into remembered state — a whole-`Tunation` invalidation, which is
+ *    what this engine gives — so the retune emits the scrollable or the fixed branch and not both.
+ *    Until those two fixes land, with `content == null` the fixed layout always wins here, as it did:
+ *    an icon + title + text dialog taller than the screen is clipped instead of becoming scrollable.
+ *    Supplying a `content` slot picks the scrollable layout up front, which is also what upstream does.
+ *    The `edgeButton` overloads need no such choice — upstream gives them a scrollable layout
+ *    unconditionally, `content == null` included (`:1070-1073`), and so does this file.
+ *  - The `edgeButton` overloads (`material3/AlertDialog.kt:486`, `:586`, `:1055`, `:1146`) are ported,
+ *    but without the scroll-linked reveal. Upstream hands the slot to a `ScreenScaffold` (`:1076-1086`)
+ *    that grows and fades it as the list reaches its end (`material3/ScreenScaffold.kt:584-679`), the
+ *    target height coming from `scrollInfoProvider.lastItemOffset` (`:580-583`). What is missing is not
+ *    that number and this file used to claim it was: [ScrollInfoProvider] declares `lastItemOffset`
+ *    (`ScrollAway.kt:97-102`) and every value behind it is recoverable from the `RecyclerView`
+ *    [ScalingLazyListState] already holds (`lazy/WearLazyColumn.kt:39`); the state simply does not
+ *    publish it yet, which is a gap in `lazy/`, not missing infrastructure. The reveal is missing
+ *    because the height is applied by `Modifier.dynamicHeight(onIntrinsicHeightMeasured = …)`
+ *    (`ScreenScaffold.kt:590-606`, `:797-884`) — a measure-time height clamp and an intrinsic-height
+ *    callback, both compose-ui layout machinery — which is also the reason this module's own
+ *    [ScreenScaffold] edge-button overload gives for the same gap (`Scaffold.kt:206-212`), and the
+ *    same read is what folds the slot's *intrinsic* height into the list's bottom padding
+ *    (`ScreenScaffold.kt:610-624`). The inset here is computed for [AlertDialogDefaults.EdgeButton] —
+ *    [EdgeButtonSize.Medium] plus the button's own top and bottom `EdgeButtonVerticalPadding`
+ *    (view/WearEdgeButtonView.kt:186-194) — and a caller that passes a slot of a different size gets a
+ *    different bottom inset than upstream's measurement would have produced.
  *  - [AlertDialogDefaults.ConfirmButton] and [AlertDialogDefaults.DismissButton] are now the
  *    `FilledIconButton` (`material3/AlertDialog.kt:1270`) and `FilledTonalIconButton` (`:1318`) calls
  *    upstream writes, with its shapes (`:1279`, `:1322`), its size and rotation chain
@@ -110,6 +171,18 @@ import kotlin.math.ceil
  *    `testTag` anywhere, so there is none to drop here either.
  *  - Semantics (`semantics(mergeDescendants)`, `Role.Button`, `clearAndSetSemantics`) are dropped:
  *    hibari-wear has no semantics layer yet.
+ *  - The confirm and dismiss icon descriptions are read from this module's `res/values/strings.xml`
+ *    under upstream's own keys, `wear_m3c_alert_dialog_content_description_{confirm,dismiss}_button`
+ *    (`res/values/wear_m3c_strings.xml:18-19`). Those two are the only strings anywhere in upstream's
+ *    `AlertDialog.kt` — `grep` for `getString` lands on exactly `:1448` and `:1457` — and both reach a
+ *    plain `Icon(contentDescription = ...)`, i.e. the `ImageView`'s accessibility description; the
+ *    dialog itself carries none, so there is no dialog-level string to chase. Upstream keeps them
+ *    inline in the argument-less `ConfirmIcon` / `DismissIcon` vals and publishes no accessor, so
+ *    unlike [SliderDefaults.increaseIconContentDescription] there is no property to add here; the two
+ *    ported icons take `contentDescription: String? = null` and resolve the resource in the body,
+ *    because a `@Tunable` default expression is hoisted out of the tuner. What is still missing from
+ *    those vals is the glyph: `Icons.Check` and `Icons.Close` are drawables, and this module ships
+ *    none — the gap is drawable-only now, not resource-only.
  */
 
 /* ------------------------------------------------------------------ *
@@ -201,7 +274,7 @@ internal fun Modifier.dialogRotation(degrees: Float): Modifier =
  *   stands for the other entry points.
  * @param properties the [DialogProperties] carried by [Dialog].
  * @param content upstream offers a `ScalingLazyListScope` overload and a `TransformingLazyColumnScope`
- *   one; only [LazyListScope] exists here, and only the first overload's shape is ported.
+ *   one; both are ported and both land on [LazyListScope], the only list scope this module has.
  */
 @Tunable
 fun AlertDialog(
@@ -240,6 +313,67 @@ fun AlertDialog(
             text = text,
             verticalArrangement = verticalArrangement,
             contentPadding = resolvedPadding,
+            content = content,
+        )
+    }
+}
+
+/**
+ * Ported from the confirm/dismiss `AlertDialog` overload that takes a `transformationSpec`
+ * (`material3/AlertDialog.kt:230-271`). Same content as the overload above, listed through
+ * [com.huanli233.hibari.wear.lazy.TransformingLazyColumn] with [transformationSpec] instead of the
+ * alert list's own fixed curve.
+ *
+ * `transformationSpec` is required, as upstream's is (`:235`) — that is also what keeps the two
+ * overloads resolvable against each other, since the one above has no parameter in that slot.
+ * [dismissButton] stays nullable for the hoisting reason the overload above documents; upstream
+ * defaults it to `AlertDialogDefaults.DismissButton(onDismissRequest)` at `:237-239`, resolved here by
+ * [alertDialogConfirmDismissButtons].
+ *
+ * @param transformationSpec upstream's `TransformationSpec`, carried here by [ListTransformParams] —
+ *   see the file header for the exact mapping and the three members that cannot be carried.
+ * @param contentPadding nullable, and resolved in the body for the hoisting reason, as in the
+ *   overload above; [content] non-null selects the transforming list, its absence the fixed layout.
+ */
+@Tunable
+fun AlertDialog(
+    visible: Boolean,
+    onDismissRequest: () -> Unit,
+    confirmButton: @Tunable RowScope.() -> Unit,
+    title: @Tunable () -> Unit,
+    transformationSpec: ListTransformParams,
+    modifier: Modifier = Modifier,
+    dismissButton: (@Tunable RowScope.() -> Unit)? = null,
+    icon: (@Tunable () -> Unit)? = null,
+    text: (@Tunable () -> Unit)? = null,
+    verticalArrangement: Arrangement.Vertical = AlertDialogDefaults.VerticalArrangement,
+    contentPadding: PaddingValues? = null,
+    properties: DialogProperties = DialogProperties(),
+    content: (LazyListScope.() -> Unit)? = null,
+) {
+    val resolvedPadding = contentPadding
+        ?: if (icon != null) {
+            AlertDialogDefaults.confirmDismissWithIconContentPadding()
+        } else {
+            AlertDialogDefaults.confirmDismissContentPadding()
+        }
+    Dialog(
+        visible = visible,
+        onDismissRequest = onDismissRequest,
+        modifier = Modifier,
+        properties = properties,
+    ) {
+        alertDialogSpecifiedContent(
+            confirmButton = confirmButton,
+            dismissButton = dismissButton,
+            onDismissRequest = onDismissRequest,
+            title = title,
+            modifier = modifier,
+            icon = icon,
+            text = text,
+            verticalArrangement = verticalArrangement,
+            contentPadding = resolvedPadding,
+            transformationSpec = transformationSpec,
             content = content,
         )
     }
@@ -290,6 +424,64 @@ fun AlertDialog(
             text = text,
             verticalArrangement = verticalArrangement,
             contentPadding = resolvedPadding,
+            content = content,
+        )
+    }
+}
+
+/**
+ * Ported from the buttonless `AlertDialog` overload that takes a `transformationSpec`
+ * (`material3/AlertDialog.kt:397-433`).
+ *
+ * This is the pair where upstream's `contentPadding` is a function of `isScrollable` (`:406-412`),
+ * because upstream learns `isScrollable` from `DynamicScrollableOrFixedLayout`; the file header says
+ * why this port answers it from `content != null` instead.
+ *
+ * @param transformationSpec upstream's `TransformationSpec`, carried here by [ListTransformParams] —
+ *   see the file header.
+ * @param contentPadding called with the scrollable answer this entry point reduces to
+ *   `content != null`; null resolves upstream's default, which reads
+ *   [AlertDialogDefaults.buttonStackContentPadding] or its with-icon twin depending on [icon], in the
+ *   body because a `@Tunable` default expression may not call a `@Tunable`.
+ */
+@Tunable
+fun AlertDialog(
+    visible: Boolean,
+    onDismissRequest: () -> Unit,
+    title: @Tunable () -> Unit,
+    transformationSpec: ListTransformParams,
+    modifier: Modifier = Modifier,
+    icon: (@Tunable () -> Unit)? = null,
+    text: (@Tunable () -> Unit)? = null,
+    verticalArrangement: Arrangement.Vertical = AlertDialogDefaults.VerticalArrangement,
+    contentPadding: (@Tunable (Boolean) -> PaddingValues)? = null,
+    properties: DialogProperties = DialogProperties(),
+    content: (LazyListScope.() -> Unit)? = null,
+) {
+    val isScrollable = content != null
+    val resolvedPadding = contentPadding?.invoke(isScrollable)
+        ?: if (icon != null) {
+            AlertDialogDefaults.buttonStackWithIconContentPadding(isScrollable)
+        } else {
+            AlertDialogDefaults.buttonStackContentPadding(isScrollable)
+        }
+    Dialog(
+        visible = visible,
+        onDismissRequest = onDismissRequest,
+        modifier = Modifier,
+        properties = properties,
+    ) {
+        alertDialogSpecifiedContent(
+            confirmButton = null,
+            dismissButton = null,
+            onDismissRequest = null,
+            title = title,
+            modifier = modifier,
+            icon = icon,
+            text = text,
+            verticalArrangement = verticalArrangement,
+            contentPadding = resolvedPadding,
+            transformationSpec = transformationSpec,
             content = content,
         )
     }
@@ -353,6 +545,57 @@ fun AlertDialog(
 }
 
 /**
+ * Ported from the edge-button `AlertDialog` overload that takes a `transformationSpec`
+ * (`material3/AlertDialog.kt:586-623`): the dialog above, listed through
+ * [com.huanli233.hibari.wear.lazy.TransformingLazyColumn] with [transformationSpec].
+ *
+ * `transformationSpec` is required, as upstream's is (`:591`) — the same slot-position difference that
+ * keeps this pair of edge-button overloads resolvable against each other, since the one above has no
+ * parameter there.
+ *
+ * @param transformationSpec upstream's `TransformationSpec`, carried here by [ListTransformParams] —
+ *   see the file header.
+ * @param contentPadding nullable, and resolved by the [AlertDialogContent] this forwards to. Upstream
+ *   keeps a plain `PaddingValues` on this pair (`:596-601`, `:1154-1159`) rather than the
+ *   `isScrollable` function the buttonless pair has, because the edge-button layout has no fixed
+ *   branch to answer differently — see the file header.
+ */
+@Tunable
+fun AlertDialog(
+    visible: Boolean,
+    onDismissRequest: () -> Unit,
+    edgeButton: @Tunable BoxScope.() -> Unit,
+    title: @Tunable () -> Unit,
+    transformationSpec: ListTransformParams,
+    modifier: Modifier = Modifier,
+    icon: (@Tunable () -> Unit)? = null,
+    text: (@Tunable () -> Unit)? = null,
+    verticalArrangement: Arrangement.Vertical = AlertDialogDefaults.VerticalArrangement,
+    contentPadding: PaddingValues? = null,
+    properties: DialogProperties = DialogProperties(),
+    content: (LazyListScope.() -> Unit)? = null,
+) {
+    Dialog(
+        visible = visible,
+        onDismissRequest = onDismissRequest,
+        modifier = Modifier,
+        properties = properties,
+    ) {
+        AlertDialogContent(
+            edgeButton = edgeButton,
+            title = title,
+            transformationSpec = transformationSpec,
+            modifier = modifier,
+            icon = icon,
+            text = text,
+            verticalArrangement = verticalArrangement,
+            contentPadding = contentPadding,
+            content = content,
+        )
+    }
+}
+
+/**
  * Ported from the confirm/dismiss `AlertDialogContent` overload
  * (`material3/AlertDialog.kt:660-726`) — the same content with no [AlertDialog] wrapper, for a
  * caller that brings its own presentation. [dismissButton] is required here, as upstream makes it.
@@ -385,6 +628,51 @@ fun AlertDialogContent(
         text = text,
         verticalArrangement = verticalArrangement,
         contentPadding = resolvedPadding,
+        content = content,
+    )
+}
+
+/**
+ * Ported from the confirm/dismiss `AlertDialogContent` overload that takes a `transformationSpec`
+ * (`material3/AlertDialog.kt:768-841`).
+ *
+ * @param transformationSpec upstream's `TransformationSpec`, carried here by [ListTransformParams] —
+ *   see the file header. It reaches the items through [TransformingLazyColumn] only: the per-item
+ *   transform upstream hangs on it has no counterpart here, and the fixed branch this entry point falls
+ *   to without [content] takes no spec upstream either.
+ * @param contentPadding nullable, and resolved in the body for the hoisting reason, as in the
+ *   overload above.
+ */
+@Tunable
+fun AlertDialogContent(
+    confirmButton: @Tunable RowScope.() -> Unit,
+    title: @Tunable () -> Unit,
+    dismissButton: @Tunable RowScope.() -> Unit,
+    transformationSpec: ListTransformParams,
+    modifier: Modifier = Modifier,
+    icon: (@Tunable () -> Unit)? = null,
+    text: (@Tunable () -> Unit)? = null,
+    verticalArrangement: Arrangement.Vertical = AlertDialogDefaults.VerticalArrangement,
+    contentPadding: PaddingValues? = null,
+    content: (LazyListScope.() -> Unit)? = null,
+) {
+    val resolvedPadding = contentPadding
+        ?: if (icon != null) {
+            AlertDialogDefaults.confirmDismissWithIconContentPadding()
+        } else {
+            AlertDialogDefaults.confirmDismissContentPadding()
+        }
+    alertDialogSpecifiedContent(
+        confirmButton = confirmButton,
+        dismissButton = dismissButton,
+        onDismissRequest = null,
+        title = title,
+        modifier = modifier,
+        icon = icon,
+        text = text,
+        verticalArrangement = verticalArrangement,
+        contentPadding = resolvedPadding,
+        transformationSpec = transformationSpec,
         content = content,
     )
 }
@@ -423,6 +711,51 @@ fun AlertDialogContent(
 }
 
 /**
+ * Ported from the buttonless `AlertDialogContent` overload that takes a `transformationSpec`
+ * (`material3/AlertDialog.kt:961-1023`) — the pair where upstream's `contentPadding` is a function of
+ * `isScrollable` (`:968-974`), answered from `content != null` for the reason the file header gives.
+ *
+ * @param transformationSpec upstream's `TransformationSpec`, carried here by [ListTransformParams] —
+ *   see the file header.
+ * @param contentPadding called with the scrollable answer this entry point reduces to
+ *   `content != null`; null resolves upstream's default, which reads
+ *   [AlertDialogDefaults.buttonStackContentPadding] or its with-icon twin depending on [icon], in the
+ *   body because a `@Tunable` default expression may not call a `@Tunable`.
+ */
+@Tunable
+fun AlertDialogContent(
+    title: @Tunable () -> Unit,
+    transformationSpec: ListTransformParams,
+    modifier: Modifier = Modifier,
+    icon: (@Tunable () -> Unit)? = null,
+    text: (@Tunable () -> Unit)? = null,
+    verticalArrangement: Arrangement.Vertical = AlertDialogDefaults.VerticalArrangement,
+    contentPadding: (@Tunable (Boolean) -> PaddingValues)? = null,
+    content: (LazyListScope.() -> Unit)? = null,
+) {
+    val isScrollable = content != null
+    val resolvedPadding = contentPadding?.invoke(isScrollable)
+        ?: if (icon != null) {
+            AlertDialogDefaults.buttonStackWithIconContentPadding(isScrollable)
+        } else {
+            AlertDialogDefaults.buttonStackContentPadding(isScrollable)
+        }
+    alertDialogSpecifiedContent(
+        confirmButton = null,
+        dismissButton = null,
+        onDismissRequest = null,
+        title = title,
+        modifier = modifier,
+        icon = icon,
+        text = text,
+        verticalArrangement = verticalArrangement,
+        contentPadding = resolvedPadding,
+        transformationSpec = transformationSpec,
+        content = content,
+    )
+}
+
+/**
  * Ported from the edge-button `AlertDialogContent` overload (`material3/AlertDialog.kt:1055-1099`).
  *
  * Like upstream this layout does not choose between a fixed and a scrollable arrangement — it is
@@ -450,35 +783,60 @@ fun AlertDialogContent(
         } else {
             AlertDialogDefaults.contentPadding()
         }
-    val slot = edgeButton
-    val spacing = verticalArrangement.spacing
-    val edgeButtonSpacing =
-        if (text == null && content == null) {
-            AlertEdgeButtonSpacingWithoutTextAndContent
+    alertDialogEdgeButtonContent(
+        edgeButton = edgeButton,
+        title = title,
+        modifier = modifier,
+        icon = icon,
+        text = text,
+        verticalArrangement = verticalArrangement,
+        contentPadding = resolvedPadding,
+        transformationSpec = null,
+        content = content,
+    )
+}
+
+/**
+ * Ported from the edge-button `AlertDialogContent` overload that takes a `transformationSpec`
+ * (`material3/AlertDialog.kt:1146-1196`).
+ *
+ * @param transformationSpec upstream's `TransformationSpec`, carried here by [ListTransformParams] —
+ *   see the file header. Unlike the other two `AlertDialogContent` pairs, this one has no fixed branch
+ *   for the spec to be irrelevant in: upstream always takes the list, `content == null` included
+ *   (`:1162-1165`).
+ * @param contentPadding nullable, and resolved in the body for the hoisting reason. Plain
+ *   [PaddingValues] rather than the buttonless pair's `isScrollable` function, as upstream writes it
+ *   (`:1154-1159`).
+ */
+@Tunable
+fun AlertDialogContent(
+    edgeButton: @Tunable BoxScope.() -> Unit,
+    title: @Tunable () -> Unit,
+    transformationSpec: ListTransformParams,
+    modifier: Modifier = Modifier,
+    icon: (@Tunable () -> Unit)? = null,
+    text: (@Tunable () -> Unit)? = null,
+    verticalArrangement: Arrangement.Vertical = AlertDialogDefaults.VerticalArrangement,
+    contentPadding: PaddingValues? = null,
+    content: (LazyListScope.() -> Unit)? = null,
+) {
+    val resolvedPadding = contentPadding
+        ?: if (icon != null) {
+            AlertDialogDefaults.contentWithIconPadding()
         } else {
-            AlertEdgeButtonSpacing
+            AlertDialogDefaults.contentPadding()
         }
-    // `ScreenScaffold.kt:561-562`: the gap the scaffold keeps beyond the button's own padding.
-    val effectiveSpacing = (edgeButtonSpacing - EdgeButtonVerticalPadding).coerceAtLeast(0.dp)
-    val state = remember { ScalingLazyListState(initialCenterItemIndex = 0) }
-    Box(modifier = modifier.container(dialogSurface()).matchParentSize()) {
-        ScalingLazyColumn(
-            modifier = Modifier.matchParentSize(),
-            state = state,
-            contentPadding = AlertDialogEdgePaddingValues(
-                resolvedPadding,
-                AlertEdgeButtonDefaultHeight + effectiveSpacing,
-            ),
-            centerVertically = false,
-            scalingParams = AlertDialogDefaults.AlertScalingParams,
-            content = { alertDialogCommonContent(icon, title, text, spacing, content) },
-        )
-        // `ScreenScaffold.kt:590-594` aligns the slot's wrapper to BottomCenter; a FrameLayout
-        // child aligns itself, and the wrapper is what the slot then fills at its natural height.
-        Box(modifier = Modifier.gravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)) {
-            slot()
-        }
-    }
+    alertDialogEdgeButtonContent(
+        edgeButton = edgeButton,
+        title = title,
+        modifier = modifier,
+        icon = icon,
+        text = text,
+        verticalArrangement = verticalArrangement,
+        contentPadding = resolvedPadding,
+        transformationSpec = transformationSpec,
+        content = content,
+    )
 }
 
 /**
@@ -586,6 +944,151 @@ private fun alertDialogContent(
     }
 }
 
+/**
+ * The one body behind the three `transformationSpec` entry points that take confirm/dismiss or no
+ * buttons at all, mirroring upstream's `AlertDialogContentFixed*`-against-`TransformingLazyColumn`
+ * split (`material3/AlertDialog.kt:785-841`, `:977-1022`). Only the scrollable branch differs from
+ * [alertDialogContent]: upstream's fixed bodies are handed no `transformationSpec` at all
+ * (`:1504-1514`, `:1552-1560`) — a spec transforms list items, and the fixed layout has no list — so
+ * the two families share that layout and this file shares it by calling through.
+ *
+ * Upstream's per-item `Modifier.transformedHeight(...)` + `graphicsLayer` chain
+ * (`material3/AlertDialog.kt:1606-1658`, `:1731-1744`) and the `TopItemTransformationSpec` it swaps in
+ * for the first item (`:1610`, `:1622`) have no counterpart here for the two reasons the file header
+ * gives, which is why the emission below is [alertDialogCommonContent] unchanged: this call selects
+ * which list the items go into and with what params, and nothing more.
+ */
+@Tunable
+private fun alertDialogSpecifiedContent(
+    confirmButton: (@Tunable RowScope.() -> Unit)?,
+    dismissButton: (@Tunable RowScope.() -> Unit)?,
+    onDismissRequest: (() -> Unit)?,
+    title: @Tunable () -> Unit,
+    modifier: Modifier,
+    icon: (@Tunable () -> Unit)?,
+    text: (@Tunable () -> Unit)?,
+    verticalArrangement: Arrangement.Vertical,
+    contentPadding: PaddingValues,
+    transformationSpec: ListTransformParams,
+    content: (LazyListScope.() -> Unit)?,
+) {
+    val context = currentContext
+    val spacing = verticalArrangement.spacing
+    val surface = dialogSurface()
+
+    if (content != null) {
+        val userContent = content
+        val buttons = confirmButton
+        val dismissSlot = dismissButton
+        val dismissAction = onDismissRequest
+        // The same `ScreenScaffold(scrollIndicator = { })` detour as in [alertDialogContent]
+        // (`material3/AlertDialog.kt:788-794`): the scaffold's only contribution here is the padding it
+        // hands back, so the padding goes straight to the list. No `state` is passed — upstream's
+        // `rememberTransformingLazyColumnState(initialAnchorItemIndex = 0)` (`:786`) exists to feed the
+        // scroll-linked pieces this port does not have, and [TransformingLazyColumn] remembers its own.
+        Box(modifier = modifier.container(surface).matchParentSize()) {
+            TransformingLazyColumn(
+                modifier = Modifier.matchParentSize(),
+                contentPadding = contentPadding,
+                transformParams = transformationSpec,
+                content = {
+                    alertDialogCommonContent(icon, title, text, spacing, userContent)
+                    if (buttons != null) {
+                        item {
+                            alertDialogListItem(spacing) {
+                                alertDialogConfirmDismissButtons(
+                                    confirmButton = buttons,
+                                    dismissButton = dismissSlot,
+                                    onDismissRequest = dismissAction,
+                                    extraBottomPaddingEnabled = true,
+                                    context = context,
+                                )
+                            }
+                        }
+                    }
+                },
+            )
+        }
+    } else {
+        // Upstream would ask `DynamicScrollableOrFixedLayout` here and take the transforming list when
+        // the fixed content overflows; the header says why this port always answers fixed. Passing
+        // `content = null` is what puts the call through to that fixed layout and nothing else.
+        alertDialogContent(
+            confirmButton = confirmButton,
+            dismissButton = dismissButton,
+            onDismissRequest = onDismissRequest,
+            title = title,
+            modifier = modifier,
+            icon = icon,
+            text = text,
+            verticalArrangement = verticalArrangement,
+            contentPadding = contentPadding,
+            content = null,
+        )
+    }
+}
+
+/**
+ * The one body behind the two `edgeButton` [AlertDialogContent] entry points. Upstream writes the two
+ * `ScreenScaffold` calls out separately (`material3/AlertDialog.kt:1076-1098`, `:1168-1195`) and they
+ * differ only in which list the slot is laid over, so the inset arithmetic lives here once and
+ * [transformationSpec] is the one argument that chooses the list: `null` is the alert list's own fixed
+ * curve ([AlertDialogDefaults.AlertScalingParams]), a value is [TransformingLazyColumn]'s.
+ */
+@Tunable
+private fun alertDialogEdgeButtonContent(
+    edgeButton: @Tunable BoxScope.() -> Unit,
+    title: @Tunable () -> Unit,
+    modifier: Modifier,
+    icon: (@Tunable () -> Unit)?,
+    text: (@Tunable () -> Unit)?,
+    verticalArrangement: Arrangement.Vertical,
+    contentPadding: PaddingValues,
+    transformationSpec: ListTransformParams?,
+    content: (LazyListScope.() -> Unit)?,
+) {
+    val slot = edgeButton
+    val spacing = verticalArrangement.spacing
+    val edgeButtonSpacing =
+        if (text == null && content == null) {
+            AlertEdgeButtonSpacingWithoutTextAndContent
+        } else {
+            AlertEdgeButtonSpacing
+        }
+    // `ScreenScaffold.kt:561-562`: the gap the scaffold keeps beyond the button's own padding.
+    val effectiveSpacing = (edgeButtonSpacing - EdgeButtonVerticalPadding).coerceAtLeast(0.dp)
+    val listPadding =
+        AlertDialogEdgePaddingValues(contentPadding, AlertEdgeButtonDefaultHeight + effectiveSpacing)
+    val listContent: LazyListScope.() -> Unit = {
+        alertDialogCommonContent(icon, title, text, spacing, content)
+    }
+    Box(modifier = modifier.container(dialogSurface()).matchParentSize()) {
+        if (transformationSpec != null) {
+            TransformingLazyColumn(
+                modifier = Modifier.matchParentSize(),
+                contentPadding = listPadding,
+                transformParams = transformationSpec,
+                content = listContent,
+            )
+        } else {
+            val state = remember { ScalingLazyListState(initialCenterItemIndex = 0) }
+            ScalingLazyColumn(
+                modifier = Modifier.matchParentSize(),
+                state = state,
+                contentPadding = listPadding,
+                centerVertically = false,
+                scalingParams = AlertDialogDefaults.AlertScalingParams,
+                content = listContent,
+            )
+        }
+        // `ScreenScaffold.kt:590-594` aligns the slot's wrapper to BottomCenter; a FrameLayout
+        // child aligns itself, and the wrapper is what the slot then fills at its natural height.
+        Box(modifier = Modifier.gravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)) {
+            slot()
+        }
+    }
+}
+
 /** Icon, title and message, kept [spacing] apart — `verticalArrangement`'s spacing. */
 @Tunable
 private fun alertDialogSlots(
@@ -620,9 +1123,9 @@ private fun alertDialogIconAlert(content: @Tunable () -> Unit) {
 /**
  * `Title`: `titleMedium` on `onBackground`, inset 12% of the screen width on both sides.
  *
- * Upstream also pushes `TextConfiguration(textAlign = Center, maxLines = 3, overflow = Ellipsis)`
- * through `LocalTextConfiguration`. Hibari has no text-configuration local that [Text] reads, so
- * those three stay with the caller; [AlertDialogDefaults.TitleMaxLines] carries the number.
+ * The three locals upstream's `Title` provides (`material3/AlertDialog.kt:1678-1688`) all ride down
+ * here, so a caller's bare [Text] in the `title` slot is centred, ellipsised and budgeted at
+ * [AlertDialogDefaults.TitleMaxLines] lines by the dialog rather than by the caller.
  */
 @Tunable
 private fun alertDialogTitle(content: @Tunable () -> Unit) {
@@ -631,6 +1134,11 @@ private fun alertDialogTitle(content: @Tunable () -> Unit) {
         alertDialogProvideContent(
             contentColor = ColorSchemeKeyTokens.OnBackground.resolve(MaterialTheme.colorScheme),
             textStyle = MaterialTheme.typography.titleMedium,
+            textConfiguration = TextConfiguration(
+                TextAlign.Center,
+                TextOverflow.Ellipsis,
+                maxLines = AlertDialogDefaults.TitleMaxLines,
+            ),
             content = content,
         )
     }
@@ -641,10 +1149,10 @@ private fun alertDialogTitle(content: @Tunable () -> Unit) {
  * 4.dp `AlertTextMessageTopSpacing` sits on top of the arrangement gap above it, as upstream, so the
  * title and the message end up 8.dp apart.
  *
- * Like [alertDialogTitle], upstream's `TextConfiguration(textAlign = Center, overflow = Ellipsis,
- * maxLines = TextConfigurationDefaults.MaxLines)` is not provided: [Text] takes those as per-call
- * parameters and reads no local for them. Its `MaxLines` is `Int.MAX_VALUE`, which is what [Text]
- * already defaults to, so only the centring and the ellipsis are lost.
+ * Like [alertDialogTitle], the message row carries upstream's [TextConfiguration]
+ * (`material3/AlertDialog.kt:1772-1782`): centred, ellipsised, and `maxLines =
+ * TextConfigurationDefaults.MaxLines`, which is `Int.MAX_VALUE` — the line budget therefore asks for
+ * nothing, while the centring and the ellipsis bite just as they do upstream.
  */
 @Tunable
 private fun alertDialogTextMessage(content: @Tunable () -> Unit) {
@@ -654,6 +1162,11 @@ private fun alertDialogTextMessage(content: @Tunable () -> Unit) {
         alertDialogProvideContent(
             contentColor = ColorSchemeKeyTokens.OnBackground.resolve(MaterialTheme.colorScheme),
             textStyle = MaterialTheme.typography.bodyMedium,
+            textConfiguration = TextConfiguration(
+                TextAlign.Center,
+                TextOverflow.Ellipsis,
+                maxLines = TextConfigurationDefaults.MaxLines,
+            ),
             content = content,
         )
     }
@@ -663,11 +1176,13 @@ private fun alertDialogTextMessage(content: @Tunable () -> Unit) {
 private fun alertDialogProvideContent(
     contentColor: Color,
     textStyle: TextStyle,
+    textConfiguration: TextConfiguration,
     content: @Tunable () -> Unit,
 ) {
     TunationLocalProvider(
         LocalContentColor provides contentColor,
         LocalTextStyle provides textStyle,
+        LocalTextConfiguration provides textConfiguration,
         content = content,
     )
 }
@@ -801,7 +1316,10 @@ object AlertDialogDefaults {
      */
     val AlertScalingParams: ListTransformParams = ListTransformParams(minTransitionArea = 0.2f)
 
-    /** `AlertTitleMaxLines`: the title should not exceed 3 lines. Upstream applies it through a text local. */
+    /**
+     * `AlertTitleMaxLines` (`material3/AlertDialog.kt:1793`): the title should not exceed 3 lines.
+     * [alertDialogTitle] hands it to [Text] through [LocalTextConfiguration], as upstream does.
+     */
     const val TitleMaxLines = 3
 
     /** The icon size upstream sets on `ConfirmIcon` / `DismissIcon`. */
@@ -846,8 +1364,9 @@ object AlertDialogDefaults {
      * call replaced had the same primitive, so the fold changes nothing there.
      *
      * `content` has no default because upstream's is `ConfirmIcon`, which draws `Icons.Check` out of
-     * the Material icon pack and no drawable id may be invented here — pass [ConfirmIcon] to keep
-     * the 28.dp slot.
+     * the Material icon pack and no drawable id may be invented here — pass [ConfirmIcon] to keep the
+     * 28.dp slot, which since this round also reads upstream's `Icon` description from the resource,
+     * so the only half of that val still unported is the glyph.
      *
      * @param colors upstream's `IconButtonColors = IconButtonDefaults.filledIconButtonColors()`
      *   (`:1262`, `material3/IconButton.kt:512-513`), defaulted to `null` and resolved in the body
@@ -921,34 +1440,57 @@ object AlertDialogDefaults {
     }
 
     /**
-     * Upstream's `ConfirmIcon`, which drew `Icons.Check` at 28.dp inside the confirm button's row.
+     * Upstream's `ConfirmIcon`, which drew `Icons.Check` at 28.dp inside the confirm button's row
+     * (`material3/AlertDialog.kt:1445-1451`).
+     *
      * [image] is a parameter rather than a baked-in `ImageVector` because this project ships no
      * Material icon pack; see [Icon] for what it accepts.
+     *
+     * @param contentDescription Upstream does not expose this at all: it bakes
+     *   `getString(Strings.AlertDialogContentDescriptionConfirmButton)` into the `Icon` call
+     *   (`material3/AlertDialog.kt:1448`, key `wear_m3c_alert_dialog_content_description_confirm_button`
+     *   through `internal/Strings.kt:101-102`), which is what the `Icon`'s — and so the `ImageView`'s —
+     *   description ends up being. The parameter stays, and null resolves that same string in the
+     *   body, because a `@Tunable` default expression is hoisted into a non-`@Tunable` method with no
+     *   tuner to read a resource through. Consequence of keeping the slot: a caller cannot ask for the
+     *   descriptionless icon that a bare `contentDescription = null` would once have meant here — and
+     *   upstream's `ConfirmIcon`, taking no arguments at all, cannot express one either.
      */
     @Tunable
     fun ConfirmIcon(
         image: Any?,
-        contentDescription: String?,
+        contentDescription: String? = null,
         modifier: Modifier = Modifier,
     ) {
+        val description = contentDescription ?: currentContext.getString(
+            R.string.wear_m3c_alert_dialog_content_description_confirm_button,
+        )
         FixedSizeIcon(
             image = image,
-            contentDescription = contentDescription,
+            contentDescription = description,
             iconSize = IconSize,
             modifier = modifier,
         )
     }
 
-    /** Upstream's `DismissIcon`, which drew `Icons.Close` at 28.dp. See [ConfirmIcon]. */
+    /**
+     * Upstream's `DismissIcon`, which drew `Icons.Close` at 28.dp (`material3/AlertDialog.kt:1454-1460`)
+     * with `getString(Strings.AlertDialogContentDescriptionDismissButton)` baked into the `Icon`
+     * (`:1457`, key `wear_m3c_alert_dialog_content_description_dismiss_button`). See [ConfirmIcon] for
+     * why the description is a defaulted parameter resolved in the body.
+     */
     @Tunable
     fun DismissIcon(
         image: Any?,
-        contentDescription: String?,
+        contentDescription: String? = null,
         modifier: Modifier = Modifier,
     ) {
+        val description = contentDescription ?: currentContext.getString(
+            R.string.wear_m3c_alert_dialog_content_description_dismiss_button,
+        )
         FixedSizeIcon(
             image = image,
-            contentDescription = contentDescription,
+            contentDescription = description,
             iconSize = IconSize,
             modifier = modifier,
         )

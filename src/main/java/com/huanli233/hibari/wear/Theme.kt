@@ -111,7 +111,7 @@ fun currentTextStyle(): TextStyle = LocalTextStyle.current
  * Scope a container's resolved content colour to its children — upstream's
  * `provideScopeContent(color, content)` (material3/Providers.kt:80-84). [Text] reads the value back
  * off [LocalContentColor] when it was given no explicit `color` (material3/Text.kt:207, here
- * `Text.kt:55`).
+ * [Text]'s `ambient` read).
  */
 @Tunable
 internal fun provideContentColor(color: Color, content: @Tunable () -> Unit) {
@@ -120,7 +120,7 @@ internal fun provideContentColor(color: Color, content: @Tunable () -> Unit) {
 
 /**
  * Scope a container's content colour *and* text style together — upstream's
- * `provideScopeContent(contentColor, textStyle, content)` (material3/Providers.kt:53-62): a
+ * `provideScopeContent(contentColor, textStyle, content)` (material3/Providers.kt:25-36): a
  * container that restyles its children has to hand both down, because a `Text` with no explicit
  * `style` reads [LocalTextStyle] and with no explicit `color` reads [LocalContentColor]. Upstream
  * provides the style outright there rather than merging it into the ambient one, so this does too.
@@ -136,6 +136,29 @@ internal fun provideContentColorAndStyle(
     TunationLocalProvider(
         LocalContentColor provides color,
         LocalTextStyle provides style,
+        content = content,
+    )
+}
+
+/**
+ * The same scope with a [TextConfiguration] on top — upstream's
+ * `provideScopeContent(contentColor, textStyle, textConfiguration, content)`
+ * (material3/Providers.kt:38-51), the overload a button or header that also dictates its children's
+ * alignment, overflow and line budget uses. An overload rather than a fourth parameter on the one
+ * above, because upstream keeps both and every existing caller of the three-argument form — in files
+ * this one may not reach — has to keep compiling.
+ */
+@Tunable
+internal fun provideContentColorAndStyle(
+    color: Color,
+    style: TextStyle,
+    textConfiguration: TextConfiguration,
+    content: @Tunable () -> Unit,
+) {
+    TunationLocalProvider(
+        LocalContentColor provides color,
+        LocalTextStyle provides style,
+        LocalTextConfiguration provides textConfiguration,
         content = content,
     )
 }

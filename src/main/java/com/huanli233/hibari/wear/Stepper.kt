@@ -608,6 +608,10 @@ private fun Modifier.stepperRepeatableClickable(
 ) { spec ->
     // One gesture per view, kept alive across retunes and re-armed in place: a fresh Runnable per
     // tune would leave the previous repeat loop posted on the handler with nothing left to cancel it.
+    // The single-slot `tag` is what makes that re-arm possible, and its hazard: if anything else ever
+    // claims `tag` on this view the cast fails, a second gesture is installed over the first, and the
+    // first one's `repeatTick` stays posted. Uncontested today — this is the module's only plain-`tag`
+    // write, and `hibari-ui/.../ViewHierarchyPrinter.kt:147` only reads it for debug output.
     val gesture = (tag as? StepperRepeatGesture) ?: StepperRepeatGesture(this).also {
         tag = it
         setOnTouchListener(it)

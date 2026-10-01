@@ -179,9 +179,11 @@ data class PagerFlingSpec(
  * Creates and remembers a [PagerState] to be used with a Wear pager.
  *
  * Ported from `PagerState.kt:46-56`. `rememberSaveable(saver = PagerState.Saver)` becomes
- * [remember]: Hibari has no `rememberSaveable` and no `Saver`/`Parcelable` host to plug
- * `PagerState.Saver` (`PagerState.kt:173-192`) into, so the page position does not survive process
- * or config restoration — a documented gap, not a silent one.
+ * [remember]: Hibari declares no `rememberSaveable` and no `Saver` type in any module, so there is
+ * nothing to plug `PagerState.Saver` (`PagerState.kt:173-192`) into and the page position does not
+ * survive process or config restoration. The gap is the missing hook, not the platform — Android's
+ * own `Bundle` restoration is available and `PagerState` has only ints and a float to put in it —
+ * so this is unwritten, which is why it is stated here rather than left silent.
  *
  * The `.apply { pagerState.pageCountState.value = pageCount }` of `:55` is kept: the provider lambda
  * is re-assigned on every tune, so a `pageCount` that closes over changing data is re-read without
@@ -571,9 +573,14 @@ internal data class PagerScroll(
  *    Upstream applies it only when `rotaryScrollableBehavior == null`, which is always here; the
  *    `requestFocusOnHierarchyActive()` of `:129` is the rotary half and stays unported with it.
  *  - `LocalScreenIsActive provides (state.currentPage == page && parentScreenActive)` (`:184-186`)
- *    is **not ported**: Hibari has no screen-active local (and no `ScrollInfoProvider`/idle detector
- *    to compute `parentScreenActive` from), so a page's content cannot pause itself per page. Off-screen
- *    pages are not composed at all, which covers the cheap half of what it was for.
+ *    is **not provided**: this module declares no screen-active local, so a page's content cannot
+ *    pause itself per page. Off-screen pages are not composed at all, which covers the cheap half of
+ *    what it was for. The inputs are NOT the blocker, and an earlier note here claimed they were:
+ *    [ScrollInfoProvider] is ported (`ScrollAway.kt:76`), `ambientMode()` is ported
+ *    (`AmbientMode.kt:100`) and the very boolean upstream would write into the local is already
+ *    computed for the focus group at `view/WearPagerView.kt:865` (`state.liveCurrentPage.value ==
+ *    page`). Porting this means declaring the local and providing that expression per page — unwritten,
+ *    not impossible.
  *  - `semantics { horizontalScrollAxisRange = … }` (`:158-169`), whose `else` branch exists to "signal
  *    system swipe to dismiss that it can take over", is **not ported** — no semantics layer here —
  *    but the *gesture* consequence it encoded is kept: while a gesture is excluded by

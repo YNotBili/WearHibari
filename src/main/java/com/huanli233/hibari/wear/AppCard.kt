@@ -32,15 +32,30 @@ import com.huanli233.hibari.wear.tokens.CardTokens
  * upstream hands it the result of `cardContainerModifier` (material3/Card.kt:347-369).
  *
  * There is no `AppCardDefaults` type upstream to port: the one value specific to this card, the
- * 18.dp app-icon size `CardDefaults.AppImageSize` (material3/Card.kt:1078, `CardTokens.AppImageSize`),
- * sits on [CardDefaults] — and `CardDefaults` lives in `Card.kt`, which this file may not extend, so
- * it is still missing from this module. See [AppCardContent] for the note; nothing here needs the
- * value itself, because the `appImage` slot is caller-sized.
+ * 18.dp app-icon size, is `CardDefaults.AppImageSize` (material3/Card.kt:1078,
+ * `CardTokens.AppImageSize`) and it already sits on [CardDefaults], which lives in `Card.kt` in this
+ * same package — so this file reads it rather than re-declaring it, and a caller sizes the
+ * `appImage` slot with that constant. There is likewise no `AppCardColors` upstream: a whole-tree
+ * grep of the reference source for that name is empty, and `AppCard` (:327) takes plain [CardColors].
+ *
+ * Upstream declares exactly two public `AppCard` entry points and this file carries one function per
+ * entry point, each with upstream's parameters in upstream's order: the clickable
+ * `AppCard(onClick, appName, title, ...)` (material3/Card.kt:327-371) and the non-clickable
+ * `AppCard(appName, title, ...)` (material3/NonClickableCard.kt:226-265). Neither is an addition of
+ * this port, and there is no third to write: unlike [TitleCard], `AppCard` has no `containerPainter`
+ * form upstream at all — the same whole-tree grep, this time for `fun AppCard(`, returns those two
+ * inside `androidx.wear.compose.material3` and nothing else — so an image-background `AppCard` is
+ * absent from upstream's surface, not from this port.
  *
  * Not ported from this overload (material3/Card.kt:327-343):
- *  - `onLongClick` / `onLongClickLabel` (:332-333, forwarded to `combinedClickable` at :1265-1273):
- *    this module's `Modifier.clickable` takes only `(enabled, onClick)`.
  *  - `interactionSource` (:339) and `transformation` (:340), for the same reasons as in [Card].
+ *    `onLongClick` / `onLongClickLabel` (:332-333) **are** ported, through [cardLongClickable] — the
+ *    Views form of upstream's `combinedClickable` (:1265-1273) — as they are in [Card] and [TitleCard].
+ *    The non-clickable form loses `transformation` too (`NonClickableCard.kt:234`; it declares no
+ *    `interactionSource` to lose) and that is the one parameter every entry point in this file drops:
+ *    `material3/SurfaceTransformation.kt:62-95` asks for a `Painter` taken and returned (:74-78) plus
+ *    two `GraphicsLayerScope` hooks (:86, :94), and Hibari has neither type, so a card here cannot
+ *    morph its container separately from its content while a transforming list scrolls it away.
  *
  * `minHeight` is not a parameter here either: upstream's `AppCard` has none, and
  * `cardContainerModifier` pins it to `CardDefaults.Height` (material3/Card.kt:1257).
@@ -51,6 +66,9 @@ import com.huanli233.hibari.wear.tokens.CardTokens
  * @param title A slot for displaying the title of the card, expected to be one or two lines of
  *   start aligned text
  * @param modifier Modifier to be applied to the card
+ * @param onLongClick Called when this card is long clicked (long-pressed). When this callback is
+ *   set, [onLongClickLabel] should be set as well.
+ * @param onLongClickLabel Semantic / accessibility label for the [onLongClick] action.
  * @param enabled Controls the enabled state of the card. When false, this card will not be
  *   clickable and there will be no ripple effect on click. Wear cards do not have any specific
  *   elevation or alpha differences when not enabled - they are simply not clickable.
@@ -73,6 +91,8 @@ fun AppCard(
     appName: @Tunable RowScope.() -> Unit,
     title: @Tunable RowScope.() -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
+    onLongClickLabel: String? = null,
     enabled: Boolean = true,
     shape: Shape? = null,
     colors: CardColors? = null,
@@ -89,12 +109,14 @@ fun AppCard(
         AppCardContent(
             appName = appName,
             title = title,
-            modifier = modifier.appCardContainer(
+            modifier = modifier.cardContainerModifier(
                 colors = resolved,
                 shape = shape ?: CardDefaults.shape,
                 border = border,
                 contentPadding = contentPadding,
                 onClick = onClick,
+                onLongClick = onLongClick,
+                onLongClickLabel = onLongClickLabel,
                 enabled = enabled,
             ),
             colors = resolved,
@@ -112,6 +134,8 @@ fun AppCard(
  * No `enabled` parameter, as upstream: with no click handling there is nothing to disable.
  * Upstream's `focusable(enabled = true, interactionSource)` and `mergeDescendants` semantics wrapper
  * (material3/Card.kt:1275-1277) are not portable here and are dropped, as they are in [Card].
+ * Upstream's `transformation` (material3/NonClickableCard.kt:234) is dropped as well, for the one
+ * reason this file's header gives.
  *
  * @param appName A slot for displaying the application name, expected to be a single line of start
  *   aligned text
@@ -149,13 +173,12 @@ fun AppCard(
         AppCardContent(
             appName = appName,
             title = title,
-            modifier = modifier.appCardContainer(
+            modifier = modifier.cardContainerModifier(
                 colors = resolved,
                 shape = shape ?: CardDefaults.shape,
                 border = border,
                 contentPadding = contentPadding,
                 onClick = null,
-                enabled = true,
             ),
             colors = resolved,
             appImage = appImage,
@@ -189,8 +212,8 @@ fun AppCard(
  * @param colors [CardColors] that will be used to resolve the content, title, and app name colors
  *   in different states. See [CardDefaults.cardColors].
  * @param appImage A slot for providing the app icon, expected to be `CardDefaults.AppImageSize`
- *   (18.dp) square — that default is upstream's only gap here, because the constant belongs on
- *   [CardDefaults], which this file cannot extend. Until it is added there, size the slot yourself.
+ *   (18.dp) square — upstream's only app-icon size at all (material3/Card.kt:320-321), and the
+ *   constant is on [CardDefaults] here, so a caller names it instead of hard-coding 18.dp.
  * @param time A slot for providing the time.
  * @param content A slot for providing the card's body content.
  */
@@ -246,8 +269,23 @@ fun AppCardContent(
 
 /**
  * This port's [Card] container chain, for a card that lays its own content out instead of using
- * [Card]'s single slot: `cardSizeModifier(minHeight) → fillMaxWidth → surface → clickable →
- * padding` (material3/Card.kt:1279-1283), in the order [Card] applies it.
+ * [Card]'s single slot.
+ *
+ * The textual order below differs from upstream's `cardSizeModifier(minHeight) → fillMaxWidth →
+ * surface → clickable → padding` (material3/Card.kt:1279-1283), and that difference is not
+ * observable in Views: `minHeight` writes `View.minimumHeight`
+ * (`hibari-foundation/.../attributes/ViewAttributes.kt:97-101`) and `padding` writes the view's own
+ * padding (`.../PaddingAttributes.kt:15`), two independent sinks on one view, so no chain order can
+ * change the result. Upstream's outer `defaultMinSize` floors the padded box; a wrap_content
+ * `ViewGroup` measures its own padding into its result and `getSuggestedMinimumHeight()` supplies
+ * the same floor, which is the same `max(content + padding, minHeight)` expression. [Card]'s own
+ * chains end the same way for the same reason.
+ *
+ * What is NOT settled from source on this machine: the framework's measure step was not read (no
+ * `LinearLayout` sources here), so the last sentence rests on standard Android behaviour plus this
+ * module's own notes in `InteractiveComponentSize.kt:23,34-38,48-50`. The one test that decides it is
+ * a height read of a `CardDefaults.Height` card on a watch: 88.dp end to end is parity, 112.dp means
+ * the floor really is inside the padding.
  */
 private fun Modifier.appCardContainer(
     colors: CardColors,
@@ -255,12 +293,19 @@ private fun Modifier.appCardContainer(
     border: BorderStroke?,
     contentPadding: PaddingValues,
     onClick: (() -> Unit)?,
+    onLongClick: (() -> Unit)?,
+    onLongClickLabel: String?,
     enabled: Boolean,
 ): Modifier {
     var chain = matchParentWidth()
         .container(colors.containerSpec(shape, border))
     if (onClick != null) {
         chain = chain.clickable(enabled = enabled, onClick = onClick)
+            .cardLongClickable(
+                enabled = enabled,
+                onLongClick = onLongClick,
+                onLongClickLabel = onLongClickLabel,
+            )
     }
     return chain.padding(contentPadding).minHeight(CardDefaults.Height)
 }

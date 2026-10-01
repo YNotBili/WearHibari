@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Tag keys for per-view state this module has to remember across retunes.
+
+  `View.setTag(int, Object)` rejects any key whose package id is below 2, so a key must be a real
+  resource id; `View.generateViewId()` returns values in 1..0x00FFFFFF and therefore throws. Same
+  requirement `hibari-runtime/res/values/ids.xml` meets for `hibari_state_bindings`.
+
+  This file is shared by every lane: add a key, never rewrite the list.
+-->
+<resources>
+    <item name="hibari_wear_click_handler" type="id" />
+    <item name="hibari_hierarchical_focus_node" type="id" />
+    <item name="hibari_hierarchical_focus_coordinator" type="id" />
+    <item name="hibari_wear_placeholder_skeleton" type="id" />
+    <item name="hibari_wear_placeholder_shimmer" type="id" />
+    <item name="hibari_wear_slider_click_handler" type="id" />
+    <item name="hibari_wear_radio_click_handler" type="id" />
+</resources>

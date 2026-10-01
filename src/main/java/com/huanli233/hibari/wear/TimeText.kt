@@ -36,19 +36,20 @@ import java.util.Locale
  *  - `TimeTextDefaults.timeFormat()` / `.timeTextStyle()` / `.rememberTimeSource()`
  *    (`material3/TimeText.kt:157-197`) are object members upstream; this module's `TimeTextDefaults`
  *    is in another file, which this port may not edit, so they are top-level functions of the same
- *    names. `TimeText` does not consume them: its landed form drives `WearTimeTextView` from a
- *    `BroadcastReceiver` inside the view (`view/WearTimeTextView.kt:68-95`) and takes no `timeSource`
- *    parameter at all (upstream's is `material3/TimeText.kt:111`). They are for a caller composing
- *    their own time text, which is what upstream's `timeSource` parameter enables.
+ *    names. `TimeText` consumes all three: its `timeSource` parameter defaults to
+ *    `rememberTimeSource(timeFormat())`, exactly as upstream's does (`:111`), and its glyph colour and
+ *    font size come from `timeTextStyle()`. A caller that wants its own wording passes a
+ *    [TimeSource] there, which is the same lever upstream's parameter is.
  *  - `TimeTextDefaults.TimeFormat24Hours` / `TimeFormat12Hours` (`:137`, `:140`) likewise become
  *    top-level [TimeFormat24Hours] / [TimeFormat12Hours] rather than new members of the existing
- *    object. Its `ContentPadding` (`:151`) and `MaxSweepAngle` (`:148`, already ported) are not
- *    repeated here.
+ *    object. Of the remaining members, `MaxSweepAngle` (`:148`), `backgroundColor()` (`:203`) and
+ *    `ContentPadding` (`:151`) are on this module's `TimeTextDefaults` in `CurvedText.kt` — do not
+ *    restate them here.
  *  - Upstream's `currentTimeMillis()` (`materialcore/Resources.kt:62`) has no Hibari counterpart, so
  *    the tick callback reads `System.currentTimeMillis()` directly, which is what that one-line
  *    helper does.
- *  - `Locale.current.platformLocale` (`:160`) becomes [Locale.getDefault], the same source
- *    `WearTimeTextView` formats its own pattern from.
+ *  - `Locale.current.platformLocale` (`:160`) becomes [Locale.getDefault], the same locale
+ *    `timeTextStyle`'s pattern is resolved against.
  */
 /**
  * `TimeTextDefaults.TimeFormat24Hours` (`material3/TimeText.kt:137`): the skeleton handed to
@@ -213,15 +214,16 @@ internal fun currentTime(time: () -> Long, timeFormat: String): MutableState<Str
  *
  * Upstream v1 defaults its style to v1's `timeTextStyle()`, which is `caption1`-based
  * (`material/TimeText.kt:189-196`). This module has one typography, and the role [TimeText] renders
- * its own time with is `arcMedium` (`CurvedText.kt:144`), so the separator matches the text it
- * separates via [timeTextStyle] instead.
+ * its own time with is `arcMedium` folded into [timeTextStyle] (see this file's `timeTextStyle`, which
+ * starts from `MaterialTheme.typography.arcMedium`), so the separator matches the text it separates
+ * via [timeTextStyle] instead.
  *
  * Upstream's one `TextStyle` carries colour and typography together, so the default flows to `Text`
  * as a single argument (`material/TimeText.kt:212`); a Hibari [TextStyle] has no colour slot at all
- * (`Text.kt:24-37`), so the two are routed separately here: the colour off the [CurvedTextStyle]
- * [timeTextStyle] builds, the rest off [textStyle] or off `arcMedium`. The consequence is stated
- * rather than papered over — a caller who passes [textStyle] cannot set its colour through that
- * object, because the object has no such field.
+ * (`ui/text/TextStyle.kt:10`), so the two are routed separately here: the colour off the
+ * [CurvedTextStyle] [timeTextStyle] builds, the rest off [textStyle] or off `arcMedium`. The
+ * consequence is stated rather than papered over — a caller who passes [textStyle] cannot set its
+ * colour through that object, because the object has no such field.
  *
  * Hidden from TalkBack in one upstream and not in the other, and not here at all: m3 wraps its
  * separator in `clearAndSetSemantics {}` (`material3/TimeText.kt:225-234`, the call at `:233`) and the
@@ -278,9 +280,15 @@ private class TimeTicker(
             addAction(Intent.ACTION_TIME_CHANGED)
             addAction(Intent.ACTION_TIMEZONE_CHANGED)
         }
-        // minSdk 25, and on 33+ a receiver without an explicit export flag throws
-        // SecurityException. `ACTION_TIME_*` are protected system broadcasts, so not exported is both
-        // what upstream asks for and what the platform accepts; same guard as `WearTimeTextView`.
+        // Deviation, stated rather than glossed: upstream registers this same filter with no export
+        // flag at all (`material3/TimeText.kt:308-317`, the call at `:314`). `RECEIVER_NOT_EXPORTED`
+        // is a constant from API 33, which is the level gated on here, and the enforcement that made it
+        // worth adding is Android 14's (`targetSdk` 34), where a flag-less `registerReceiver` for a
+        // receiver that is not guarded throws. Whether these three `ACTION_TIME_*` actions count as
+        // guarded-system-only for that purpose is platform behaviour neither this repo nor the
+        // reference tree can settle, so the flag is kept as the safe reading and this filter's actions
+        // are all protected system broadcasts, which no other app can send anyway — i.e. the flag
+        // costs nothing that upstream was getting.
         if (Build.VERSION.SDK_INT >= 33) {
             context.registerReceiver(this, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {

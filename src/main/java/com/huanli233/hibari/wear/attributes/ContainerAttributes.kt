@@ -4,7 +4,6 @@ import android.os.Build
 import android.widget.TextView
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.graphics.Color
-import com.huanli233.hibari.ui.thenUnitViewAttribute
 import com.huanli233.hibari.ui.thenViewAttribute
 import com.huanli233.hibari.ui.text.TextStyle
 import com.huanli233.hibari.ui.text.createTypeface
@@ -36,11 +35,16 @@ fun Modifier.container(spec: ContainerSpec): Modifier =
 /**
  * The Views equivalent of Compose's `minimumInteractiveComponentSize`: `wrap_content` children
  * honour [sizePx] through `minimumWidth`/`minimumHeight` instead of measure constraints.
+ *
+ * The floor rides as the attribute's *value*, not in the applier's closure: a unit attribute compares
+ * equal on every retune (`ViewAttribute.equals` looks at key, value and `reuseSupported`, never the
+ * applier), so a captured `sizePx` would be applied once at view creation and then silently ignore a
+ * new density.
  */
 fun Modifier.minimumInteractiveComponentSize(sizePx: Int): Modifier =
-    this.thenUnitViewAttribute<android.view.View>(uniqueKey) {
-        minimumWidth = sizePx
-        minimumHeight = sizePx
+    this.thenViewAttribute<android.view.View, Int>(uniqueKey, sizePx) {
+        minimumWidth = it
+        minimumHeight = it
     }
 
 /**
@@ -82,6 +86,21 @@ fun Modifier.textStyle(style: TextStyle): Modifier =
 fun Modifier.textColor(color: Color): Modifier =
     this.thenViewAttribute<TextView, Color>(uniqueKey, color) { setTextColor(it.toArgb()) }
 
-/** Convenience for the many components whose content colour is only applied when specified. */
+/**
+ * Convenience for the many components whose content colour is only applied when specified.
+ *
+ * Deliberately left conditional, unlike the always-present sentinel `Modifier.image` now uses: a
+ * `TextView` has no way back from a written colour. `setTextColor` latches the colour as explicitly
+ * set, so it survives every later appearance resolution and only a rebuilt view can be colourless
+ * again. What a rebuilt one shows is not a constant this module can name either — `Renderer.render`
+ * builds a `Text` view through its `(Context)` constructor whenever the chain carries no attrs
+ * (`hibari-runtime/.../Renderer.kt:125-126`, `:189-194`), which is `TextView(context, null,
+ * textViewStyle)`, so the colour comes from the theme's `textViewStyle`. Always emitting and writing
+ * nothing for the unset sentinel would therefore keep the previous tune's colour standing where the
+ * rebuild shows the theme's, and always emitting the theme's colour would overwrite it on every
+ * `Text` outside a provider. [com.huanli233.hibari.wear.LocalContentColor]'s seed (`Theme.kt:23-29`)
+ * documents the same trade. The cost of a colour turning off is one leaf `TextView` recreation, with
+ * no subtree below it.
+ */
 fun Modifier.textColorIfSpecified(color: Color): Modifier =
     if (color.isSpecified) textColor(color) else this

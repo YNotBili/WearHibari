@@ -21,6 +21,7 @@ import android.view.ViewGroup
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.FrameLayout
+import com.huanli233.hibari.wear.R
 import com.huanli233.hibari.animation.AnimationState
 import com.huanli233.hibari.animation.AnimationVector1D
 import com.huanli233.hibari.animation.CubicBezierEasing
@@ -72,6 +73,13 @@ import kotlin.math.sqrt
  *
  * [gradientColor] keeps upstream's three-way meaning: any real colour paints the top and bottom fade
  * rects, [Color.Unspecified] selects the `BlendMode.Modulate` mask path instead.
+ *
+ * [transform] is one shared instance rather than a per-tune construction. It compares either way —
+ * [ListTransformParams] is a data class and
+ * [com.huanli233.hibari.animation.CubicBezierEasing] overrides `equals` over its four coefficients
+ * (`hibari-animation/src/main/java/com/huanli233/hibari.animation/Easing.kt:154-160`) — so nothing
+ * about the diff changes; what the shared instance removes is the allocation plus the cubic root
+ * solve its `init` runs to bound the curve (`same file, :108-116`), one of each per [Picker] per tune.
  */
 internal data class PickerProps(
     val state: PickerState,
@@ -85,13 +93,86 @@ internal data class PickerProps(
     val valueDescription: String?,
 )
 
-/** The slot lambdas, in a second attribute so a colour or number change never rebinds rows. */
+/**
+ * The picker's slot lambdas in one holder whose identity never changes, so the attribute carrying it
+ * can compare equal across retunes and stop re-tuning every visible row.
+ *
+ * Hibari has no lambda memoisation: a tune hands back a new closure for every block written at the
+ * call site — `TunableTypeTransformer.kt:327-359` turns a `@Tunable` function type into a plain
+ * `FunctionN` with an extra `Tuner` parameter, and nothing caches the instance the way Compose's
+ * `ComposableLambda` does — so comparing the lambdas against themselves answers "changed" on every
+ * single retune. That is what made the whole row set re-tune on every retune, and a retune is not
+ * cheap here: invalidation is per `Tunation`, which for these pickers means the whole screen, so any
+ * state write anywhere on it re-ran every picker's slots. A fling frame is *not* one of those
+ * retunes — `Picker` keeps `centerItemScrollOffset` out of the observable state and short-circuits
+ * the description while scrolling — so what this holder removes is the unrelated-retune cost, not a
+ * per-frame one.
+ *
+ * [generation] therefore moves only when a slot instance really was replaced, which is never for a
+ * capture-free block like `{ index -> Text("Option $index") }` and *still every tune* for a block
+ * that captured anything. The latter is load-bearing, not an oversight:
+ * [com.huanli233.hibari.wear.TimePicker]'s hour, minute and second options build their strings from
+ * `hourValueOffset`, `layoutConfig`, `colors` and a `Locale` captured by value
+ * (`TimePicker.kt:839-846`), and a row's own `Tunation` cannot observe any of those, so the rebind
+ * per retune is the only thing that keeps them current.
+ */
+internal class PickerSlots(
+    parentTunation: Tunation,
+    scope: PickerScope,
+    option: @Tunable PickerScope.(index: Int) -> Unit,
+    readOnlyLabel: (@Tunable BoxScope.() -> Unit)?,
+    onSelected: () -> Unit,
+) {
+    /** The tune the rows compose under. Refreshed every tune; it moves nothing by itself. */
+    var parentTunation: Tunation = parentTunation
+        private set
+
+    var scope: PickerScope = scope
+        private set
+
+    var option: @Tunable PickerScope.(index: Int) -> Unit = option
+        private set
+
+    var readOnlyLabel: (@Tunable BoxScope.() -> Unit)? = readOnlyLabel
+        private set
+
+    /**
+     * Read at click time and never compared, which is upstream's `rememberUpdatedState(onSelected)`
+     * doing the same job: a callback is not content, so replacing it must not re-tune a row.
+     */
+    var onSelected: () -> Unit = onSelected
+        private set
+
+    /** Moved only when [option] or [readOnlyLabel] really was replaced; see the class comment. */
+    var generation = 0
+        private set
+
+    /** Fold one tune's slots in. Returns nothing: the caller publishes [generation] itself. */
+    fun update(
+        parentTunation: Tunation,
+        scope: PickerScope,
+        option: @Tunable PickerScope.(index: Int) -> Unit,
+        readOnlyLabel: (@Tunable BoxScope.() -> Unit)?,
+        onSelected: () -> Unit,
+    ) {
+        if (this.option !== option || this.readOnlyLabel !== readOnlyLabel) generation++
+        this.parentTunation = parentTunation
+        this.scope = scope
+        this.option = option
+        this.readOnlyLabel = readOnlyLabel
+        this.onSelected = onSelected
+    }
+}
+
+/**
+ * The attribute value carrying the slots. [slots] keeps its identity for the life of the call site
+ * and [generation] only moves when a content slot really changed, so a retune that changed nothing
+ * leaves this data class equal, the attribute unapplied, and [WearPickerView.pickerContent] — which
+ * rebinds every row it is handed a new value for — untouched.
+ */
 internal data class PickerContentProps(
-    val parentTunation: Tunation,
-    val scope: PickerScope,
-    val option: @Tunable PickerScope.(index: Int) -> Unit,
-    val readOnlyLabel: (@Tunable BoxScope.() -> Unit)?,
-    val onSelected: () -> Unit,
+    val slots: PickerSlots,
+    val generation: Int,
 )
 
 /** [WearPickerGroupView]'s knobs; the two spring numbers are upstream's `fastSpatialSpec()`. */
@@ -129,18 +210,27 @@ internal data class PickerGroupProps(
  *  - Upstream's `BlendMode.Modulate` is [PorterDuff.Mode.MULTIPLY] here, applied inside
  *    [Canvas.saveLayer]: the same premultiplied multiply, and the layer is the analogue of the
  *    `CompositingStrategy.Offscreen` layer upstream installs for exactly this branch.
- *  - `Role.ValuePicker` has no `AccessibilityNodeInfo` counterpart, and upstream's click hint is an
- *    accessibility *action label* — `getString(Strings.PickerClickToAdjustHint)` while read-only and
- *    `getString(Strings.PickerClickToSelectHint)` otherwise, i.e.
- *    `R.string.wear_m3c_picker_click_to_adjust_hint` / `..._select_hint` (`internal/Strings.kt`,
- *    referenced from `Picker.kt`) — and the framework *can* carry one, through
- *    `AccessibilityNodeInfo.AccessibilityAction(id, label)` added in
- *    `onInitializeAccessibilityNodeInfo`. What this port has no answer for is the id: how Compose picks
- *    one is not visible in the reference tree (compose-ui is absent), and an id chosen here would have
- *    to avoid the framework's own action ids by guesswork. So the label degrades to
- *    [View.isClickable]'s generic click action, and the two hint strings ("Adjust the value" /
- *    "Select the value", `res/values/wear_m3c_strings.xml:12-13`) are deliberately left undeclared
- *    rather than declared with no consumer. The description and the scroll actions are ported.
+ *  - `Role.ValuePicker` has no `AccessibilityNodeInfo` counterpart, so the class name stays at the
+ *    framework default. Upstream's click hint *is* ported: it labels the click action —
+ *    `getString(Strings.PickerClickToAdjustHint)` while read-only and `...PickerClickToSelectHint`
+ *    otherwise (`material3/Picker.kt:177-181`), handed to `onClick(pickerClickHintString)` at `:223`,
+ *    keys at `material3/internal/Strings.kt:83-87` — and the framework carries a labelled action
+ *    natively, as `AccessibilityAction(id, label)` put on the node with `addAction` (both API 21, so
+ *    nothing here needs a guard above this module's minSdk 25).
+ *    [onInitializeAccessibilityNodeInfo] therefore adds `ACTION_CLICK` again under upstream's text,
+ *    read from this module's `res/values/strings.xml` with upstream's keys and wording ("Adjust the
+ *    value" / "Select the value"; reference xml:12-13). Two claims the earlier revision of this note
+ *    got wrong are corrected here: the id was never the blocker — this is a re-label of the
+ *    framework's own click, not an invented custom action, and androidx.core builds
+ *    `AccessibilityActionCompat.ACTION_CLICK` with exactly that id (16, read off the core-1.12.0
+ *    bytecode) before handing the labelled pair to `AccessibilityNodeInfo.addAction`; and the two
+ *    keys *are* in the reference tree. The behaviour flag is deliberately not removed before the
+ *    add: `removeAction` on a built-in clears the mask `isClickable` reports, and for this picker
+ *    the a11y click is the only selection path ([performClick]'s `onSelected`), so clearing it could
+ *    cost the affordance to buy a wording. What a desk check cannot settle is what a given TalkBack
+ *    does with two entries for one id: if it keeps the default next to ours the generic wording is
+ *    still audible, but the click works either way, since `performAccessibilityAction` routes on the
+ *    plain int. The description and the scroll actions are ported.
  *  - Upstream's `semantics { scrollToIndex { state.scrollToOption(it); onSelected() } }` is **not**
  *    ported, and cannot be: it reaches TalkBack as `ACTION_SCROLL_TO_POSITION` with an item-index
  *    argument, which exist only on `AccessibilityNodeInfoCompat`, and a framework `View` exposes
@@ -177,8 +267,11 @@ internal data class PickerGroupProps(
  *    which have no Views counterpart. Here the picker that [autoCenteringTarget] marks — which is
  *    exactly the picker a `PickerGroup` selects — takes focus when it becomes the target, because
  *    rotary events only reach a `View` that holds focus.
- *  - Content rows are (re)bound only when their option index changes or the slot lambdas are
- *    replaced, not on every measure: `HibariViewHolder.bind` re-tunes its whole subtree.
+ *  - Content rows are (re)bound when their option index changes, when a content slot really was
+ *    replaced ([PickerSlots.generation]) or when the props land with a context a row could have read
+ *    (`applyProps`), not on every measure and not on every retune: `HibariViewHolder.bind` re-tunes
+ *    its whole subtree, and before the slots travelled in a holder of stable identity that bind ran
+ *    for every row on every retune of the host.
  */
 class WearPickerView @JvmOverloads constructor(
     context: Context,
@@ -194,6 +287,27 @@ class WearPickerView @JvmOverloads constructor(
     private val fillPaint = Paint()
     private val maskPaint = Paint().also { it.xfermode = PorterDuffXfermode(PorterDuff.Mode.MULTIPLY) }
     private val layerBounds = RectF()
+
+    /**
+     * The fade's two shaders, kept across frames. [dispatchDraw] runs once per frame of a scroll, and
+     * nothing a fade depends on — the inset, the height, the ratio, the colour, the width — moves
+     * during one, so building them there was two `LinearGradient` objects plus their colour and stop
+     * arrays per picker per frame. The keys are `NaN` at the start, which compares unequal to every
+     * real value, so the first frame builds them.
+     */
+    private var fadeTopShader: LinearGradient? = null
+    private var fadeBottomShader: LinearGradient? = null
+    private var fadeCacheTop = Float.NaN
+    private var fadeCacheBottom = Float.NaN
+    private var fadeCacheRatio = Float.NaN
+    private var fadeCacheArgb = 0
+    private var fadeCacheWidth = Float.NaN
+
+    /** The same for the masking branch's one gradient; its colours are constants, so they need no key. */
+    private var fadeMaskShader: LinearGradient? = null
+    private var fadeMaskCacheTop = Float.NaN
+    private var fadeMaskCacheHeight = Float.NaN
+    private var fadeMaskCacheRatio = Float.NaN
 
     private val rows = ArrayList<PickerRowView>()
     private val rowPool = ArrayList<PickerRowView>()
@@ -214,13 +328,12 @@ class WearPickerView @JvmOverloads constructor(
     private var resolvedTransform: ListTransformParams? = null
 
     /**
-     * Bumped whenever the slot lambdas are replaced, because a retune hands back equal-but-new
-     * closures: the rows have to be re-tuned to pick up what they now capture, but not before.
+     * The row window the last [updateRows] pass filled; scrolling only refills when it moves. Held as
+     * two ints rather than a `Pair`, because this is read on every scroll step and the pair was an
+     * allocation per step spent answering "did the window move".
      */
-    private var contentGeneration = 0
-
-    /** The row window the last [updateRows] pass filled; scrolling only refills when it moves. */
-    private var boundWindow: Pair<Int, Int>? = null
+    private var boundFirstItem = INVALID_ITEM
+    private var boundLastItem = INVALID_ITEM
 
     /**
      * Signed distance from the viewport focal line to the centre of `state.centerItemIndex`, positive
@@ -306,9 +419,10 @@ class WearPickerView @JvmOverloads constructor(
     internal var pickerContent: PickerContentProps?
         get() = contentProps
         set(value) {
-            if (contentProps === value) return
+            // Structural, not identity: the attribute reaches here only when
+            // [PickerSlots.generation] moved, and a rebuilt-but-equal value must not re-tune rows.
+            if (contentProps == value) return
             contentProps = value
-            contentGeneration++
             if (value != null) {
                 rows.forEach { bindRow(it) }
                 applyReadOnlyLabel()
@@ -339,7 +453,8 @@ class WearPickerView @JvmOverloads constructor(
             centerOffsetPx = next.state.centerItemScrollOffset
             shimAlpha = if (next.readOnly) 1f else 0f
             wasEditable = !next.readOnly
-            boundWindow = null
+            boundFirstItem = INVALID_ITEM
+            boundLastItem = INVALID_ITEM
             requestLayout()
         } else if (previous.readOnly != next.readOnly) {
             animateShimTo(if (next.readOnly) 1f else 0f, snap = wearReduceMotionEnabled(context))
@@ -355,8 +470,33 @@ class WearPickerView @JvmOverloads constructor(
             }
             applyReadOnlyLabel()
         }
+        // A row's composed subtree keeps the theme it was tuned under — Hibari's tunation locals are
+        // static, so providing a new `MaterialTheme` invalidates no reader — and the picker's old
+        // rebind-everything-per-tune was what accidentally carried a context change into it. With that
+        // gone, the props landing is the one moment that says "the context moved". The state is
+        // compared by identity rather than by what it currently reports: a row composes against the
+        // scope that reads *that* state object, so swapping the state has to rebind even when the two
+        // states happen to agree on an index.
+        if (!first && previous!!.contentContextDiffersFrom(next)) {
+            rows.forEach { bindRow(it) }
+        }
         invalidate()
     }
+
+    /**
+     * Everything in [PickerProps] that a row could have read while it was being composed, as opposed
+     * to what only this view consumes: see the call in [applyProps]. [PickerProps.valueDescription] is
+     * left out on purpose — it is an accessibility string, and a new selection rebinds the rows whose
+     * option index moved anyway.
+     */
+    private fun PickerProps.contentContextDiffersFrom(next: PickerProps): Boolean =
+        state !== next.state ||
+            gradientColor != next.gradientColor ||
+            verticalSpacingPx != next.verticalSpacingPx ||
+            transform != next.transform ||
+            readOnly != next.readOnly ||
+            userScrollEnabled != next.userScrollEnabled ||
+            rotary != next.rotary
 
     /** Rotary events reach a `View` only while it holds focus; `PickerGroup` selects by focus. */
     private fun requestFocusIfNeeded() {
@@ -491,23 +631,25 @@ class WearPickerView @JvmOverloads constructor(
      */
     private fun bindRow(row: PickerRowView) {
         val content = contentProps ?: return
+        val slots = content.slots
         val optionIndex = optionIndexOf(row.itemIndex)
-        val holder = row.holder ?: HibariViewHolder(row, content.parentTunation).also {
+        val holder = row.holder ?: HibariViewHolder(row, slots.parentTunation).also {
             row.holder = it
         }
         row.boundOptionIndex = optionIndex
-        row.boundGeneration = contentGeneration
+        row.boundGeneration = content.generation
         // Both halves of the extension-lambda call have to be stable expressions: `scope.option(i)`
-        // only resolves once `option` is a local, not a property access.
-        val scope = content.scope
-        val option = content.option
+        // only resolves once `option` is a local, not a property access. Read off the slots holder, so
+        // a row always gets the caller's *current* block even when its identity never moved.
+        val scope = slots.scope
+        val option = slots.option
         holder.bind { scope.option(optionIndex) }
     }
 
     private fun bindRowIfNeeded(row: PickerRowView) {
         val content = contentProps ?: return
         if (row.holder != null &&
-            row.boundGeneration == contentGeneration &&
+            row.boundGeneration == content.generation &&
             row.boundOptionIndex == optionIndexOf(row.itemIndex)
         ) {
             return
@@ -551,27 +693,27 @@ class WearPickerView @JvmOverloads constructor(
         val items = itemLimit()
         if (width <= 0 || viewportHeightPx <= 0f || items <= 0) return
 
-        val window = visibleWindow(items)
-        if (!force && window == boundWindow && rows.isNotEmpty()) return
-        boundWindow = window
+        // The window maths is inlined here rather than behind a helper returning the range, because
+        // that range is compared against the last one on every scroll step and a pair to compare was
+        // one allocation per step.
+        val pitch = max(pitchPx(), 1f)
+        val reach = ceil((viewportHeightPx / 2f + pitch) / pitch).toInt() + 1
+        val centre = centerIndex()
+        val first = (centre - reach).coerceAtLeast(0)
+        val last = (centre + reach).coerceAtMost(items - 1)
+        if (!force && first == boundFirstItem && last == boundLastItem && rows.isNotEmpty()) return
+        boundFirstItem = first
+        boundLastItem = last
 
         val widthSpec = MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY)
         val heightSpec = MeasureSpec.makeMeasureSpec(
             max(1, viewportHeightPx.roundToInt()),
             MeasureSpec.AT_MOST,
         )
-        fillWindow(window.first, window.second)
+        fillWindow(first, last)
         rows.forEach { bindRowIfNeeded(it) }
         rows.forEach { it.measure(widthSpec, heightSpec) }
-        rows.sortBy { it.itemIndex }
-    }
-
-    /** First/last item index whose untransformed box can touch the viewport. */
-    private fun visibleWindow(items: Int): Pair<Int, Int> {
-        val pitch = max(pitchPx(), 1f)
-        val reach = ceil((viewportHeightPx / 2f + pitch) / pitch).toInt() + 1
-        val centre = centerIndex()
-        return (centre - reach).coerceAtLeast(0) to (centre + reach).coerceAtMost(items - 1)
+        rows.sortWith(ByItemIndex)
     }
 
     private fun placeRows() {
@@ -647,9 +789,9 @@ class WearPickerView @JvmOverloads constructor(
 
     /** The label slot only exists while the picker is read-only, which is when upstream shows it. */
     private fun applyReadOnlyLabel() {
-        val content = contentProps
-        val label = content?.readOnlyLabel
-        if (content == null || label == null || props?.readOnly != true) {
+        val slots = contentProps?.slots
+        val label = slots?.readOnlyLabel
+        if (slots == null || label == null || props?.readOnly != true) {
             if (labelHost != null) {
                 labelHolder?.recycle()
                 labelHolder = null
@@ -668,7 +810,7 @@ class WearPickerView @JvmOverloads constructor(
         // reproduced without re-parenting. Moving it on every content change would detach and re-attach
         // the tuned subtree each retune.
         if (host.parent == null) addView(host)
-        val holder = labelHolder ?: HibariViewHolder(host, content.parentTunation).also { labelHolder = it }
+        val holder = labelHolder ?: HibariViewHolder(host, slots.parentTunation).also { labelHolder = it }
         holder.bind { BoxScopeInstance.label() }
     }
 
@@ -721,7 +863,10 @@ class WearPickerView @JvmOverloads constructor(
         if (state.numberOfItems() <= 0) return
         if (rows.any { it.itemIndex == state.centerItemIndex && it.measuredHeight > 0 }) return
         val row = anchorRow() ?: acquireRow().also { it.itemIndex = state.centerItemIndex }
-        bindRow(row)
+        // The point of this pass is one measured height, not a fresh composition: this row is bound
+        // and measured again by the real pass below the same measure call, so re-tuning it here was
+        // one whole row subtree per measure, whatever the diff had to say about it.
+        bindRowIfNeeded(row)
         val available = if (measuredHeight > 0) measuredHeight else resources.displayMetrics.heightPixels
         row.measure(
             MeasureSpec.makeMeasureSpec(max(1, width - paddingLeft - paddingRight), MeasureSpec.EXACTLY),
@@ -787,7 +932,8 @@ class WearPickerView @JvmOverloads constructor(
         }
         rows.clear()
         rowPool.clear()
-        boundWindow = null
+        boundFirstItem = INVALID_ITEM
+        boundLastItem = INVALID_ITEM
         labelHolder?.recycle()
         labelHolder = null
         super.onDetachedFromWindow()
@@ -860,20 +1006,32 @@ class WearPickerView @JvmOverloads constructor(
     private fun drawGradient(canvas: Canvas, gradientColor: Color, ratio: Float) {
         if (gradientColor.isUnspecified) return
         val argb = gradientColor.toArgb()
-        val transparent = argb and 0x00FFFFFF
         val top = drawTopPx
-        val bottom = drawTopPx + drawHeightPx
+        val bottom = top + drawHeightPx
+        val widthPx = width.toFloat()
+        if (top != fadeCacheTop || bottom != fadeCacheBottom || ratio != fadeCacheRatio ||
+            argb != fadeCacheArgb || widthPx != fadeCacheWidth
+        ) {
+            val transparent = argb and 0x00FFFFFF
+            fadeTopShader = LinearGradient(
+                widthPx / 2f, top, widthPx / 2f, top + drawHeightPx * ratio,
+                argb, transparent, Shader.TileMode.CLAMP,
+            )
+            fadeBottomShader = LinearGradient(
+                widthPx / 2f, bottom - drawHeightPx * ratio, widthPx / 2f, bottom,
+                transparent, argb, Shader.TileMode.CLAMP,
+            )
+            fadeCacheTop = top
+            fadeCacheBottom = bottom
+            fadeCacheRatio = ratio
+            fadeCacheArgb = argb
+            fadeCacheWidth = widthPx
+        }
         fillPaint.xfermode = null
-        fillPaint.shader = LinearGradient(
-            width / 2f, top, width / 2f, top + drawHeightPx * ratio,
-            argb, transparent, Shader.TileMode.CLAMP,
-        )
-        canvas.drawRect(0f, top, width.toFloat(), top + drawHeightPx * ratio, fillPaint)
-        fillPaint.shader = LinearGradient(
-            width / 2f, bottom - drawHeightPx * ratio, width / 2f, bottom,
-            transparent, argb, Shader.TileMode.CLAMP,
-        )
-        canvas.drawRect(0f, bottom - drawHeightPx * ratio, width.toFloat(), bottom, fillPaint)
+        fillPaint.shader = fadeTopShader
+        canvas.drawRect(0f, top, widthPx, top + drawHeightPx * ratio, fillPaint)
+        fillPaint.shader = fadeBottomShader
+        canvas.drawRect(0f, bottom - drawHeightPx * ratio, widthPx, bottom, fillPaint)
         fillPaint.shader = null
     }
 
@@ -905,13 +1063,19 @@ class WearPickerView @JvmOverloads constructor(
     private fun drawGradientMask(canvas: Canvas, ratio: Float) {
         val top = drawTopPx
         val height = drawHeightPx
+        if (top != fadeMaskCacheTop || height != fadeMaskCacheHeight || ratio != fadeMaskCacheRatio) {
+            fadeMaskShader = LinearGradient(
+                0f, top, 0f, top + height,
+                intArrayOf(AndroidColor.TRANSPARENT, AndroidColor.WHITE, AndroidColor.WHITE, AndroidColor.TRANSPARENT),
+                floatArrayOf(0f, ratio, 1f - ratio, 1f),
+                Shader.TileMode.CLAMP,
+            )
+            fadeMaskCacheTop = top
+            fadeMaskCacheHeight = height
+            fadeMaskCacheRatio = ratio
+        }
         fillPaint.xfermode = maskPaint.xfermode
-        fillPaint.shader = LinearGradient(
-            0f, top, 0f, top + height,
-            intArrayOf(AndroidColor.TRANSPARENT, AndroidColor.WHITE, AndroidColor.WHITE, AndroidColor.TRANSPARENT),
-            floatArrayOf(0f, ratio, 1f - ratio, 1f),
-            Shader.TileMode.CLAMP,
-        )
+        fillPaint.shader = fadeMaskShader
         canvas.drawRect(0f, top, width.toFloat(), top + height, fillPaint)
         fillPaint.shader = null
     }
@@ -1144,7 +1308,8 @@ class WearPickerView @JvmOverloads constructor(
             if (content != null && pickerSelectOnDown && props.readOnly && !touchExplorationEnabled) {
                 // `PickerGroupItem`'s pointerInput: the first down on an unselected picker selects it,
                 // and it is a down rather than a click, so the group can react before the list does.
-                content.onSelected()
+                // Through the slots holder, so this is always the caller's *current* lambda.
+                content.slots.onSelected()
             }
             if (!autoCenteringTarget) requestFocus()
         }
@@ -1206,7 +1371,7 @@ class WearPickerView @JvmOverloads constructor(
      * which is why [onTouchEvent] never calls this.
      */
     override fun performClick(): Boolean {
-        contentProps?.onSelected?.invoke()
+        contentProps?.slots?.onSelected?.invoke()
         return super.performClick()
     }
 
@@ -1508,6 +1673,36 @@ class WearPickerView @JvmOverloads constructor(
         // `Role.ValuePicker` would rewrite the class name to a NumberPicker; there is no
         // AccessibilityNodeInfo equivalent for it, so the class name stays the framework default.
         info.isFocusable = !props.readOnly
+        // Upstream puts its click hint on the click *action*: `onClick(pickerClickHintString)
+        // { onSelected() }` inside `clearAndSetSemantics` (`material3/Picker.kt:222-226`, the string
+        // chosen per `readOnly` at `:177-181`). The framework's way to say the same thing is a
+        // labelled action over the built-in id — `AccessibilityNodeInfo.AccessibilityAction(id,
+        // label)` (class and ctor both API 21, so no guard above this module's minSdk 25) added
+        // through `addAction`. That is verbatim what androidx.core does for a labelled click:
+        // `AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK` is built with id 16,
+        // i.e. the `AccessibilityNodeInfo.ACTION_CLICK` mask, and its ctor hands
+        // `new AccessibilityNodeInfo.AccessibilityAction(id, label)` to `addAction` — read off the
+        // core-1.12.0 bytecode. Upstream's own route from `onClick(label)` to that call is not
+        // readable here (compose-ui is absent from the reference tree), so what is claimed is the
+        // channel, not the plumbing behind it. The mask is deliberately *not* removed first:
+        // `removeAction` on a built-in clears the behaviour flag the node's `isClickable` reports,
+        // which would take the click affordance away from a client that reads that flag rather than
+        // the action list — and for this picker the a11y click *is* the only selection path,
+        // [performClick]'s `onSelected`. The click itself is untouched either way, since
+        // `performAccessibilityAction` routes on the plain int.
+        if (isClickable) {
+            val hintRes = if (props.readOnly) {
+                R.string.wear_m3c_picker_click_to_adjust_hint
+            } else {
+                R.string.wear_m3c_picker_click_to_select_hint
+            }
+            info.addAction(
+                AccessibilityNodeInfo.AccessibilityAction(
+                    AccessibilityNodeInfo.ACTION_CLICK,
+                    context.getString(hintRes),
+                ),
+            )
+        }
     }
 
     /**
@@ -1552,6 +1747,11 @@ class WearPickerView @JvmOverloads constructor(
         private const val INVALID_POINTER = -1
         private const val INVALID_ITEM = -1
         private const val INVALID_GENERATION = -1
+
+        /** [ArrayList.sortWith]'s argument for the row window: one instance instead of a lambda per pass. */
+        private val ByItemIndex = Comparator<PickerRowView> { left, right ->
+            left.itemIndex.compareTo(right.itemIndex)
+        }
 
         // ScalingLazyColumnSnapFlingBehavior.kt
         private const val SnapSpeedThreshold = 1200f

@@ -35,10 +35,11 @@ import com.huanli233.hibari.wear.view.WearArcProgressIndicatorView
  * concentric with the screen.
  *
  * Otherwise the deltas are: `LocalDensity` and the `LocalConfiguration` screen height are read off the
- * view/context, and `colors` is the four-field [ProgressIndicatorColors] this module already has —
- * upstream's arc reads only `indicatorBrush` and `trackBrush` from it, never the disabled or overflow
- * entries, so nothing is lost. As in upstream this indicator has no `enabled` parameter, and being
- * indeterminate it has no `progress`.
+ * view/context, and `colors` is the six-field [ProgressIndicatorColors] this module already has —
+ * upstream's arc reads only `colors.trackBrush` (`ArcProgressIndicator.kt:104`, `:137`) and
+ * `colors.indicatorBrush` (`:122`) off it, the plain fields rather than the `*(enabled)` resolvers, so
+ * the two disabled entries and the two overflow ones are never reached and nothing is lost. As in
+ * upstream this indicator has no `enabled` parameter, and being indeterminate it has no `progress`.
  */
 
 /** Class to define angular direction - Clockwise and Counter Clockwise. */

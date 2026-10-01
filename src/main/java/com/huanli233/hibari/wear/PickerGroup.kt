@@ -112,8 +112,9 @@ class PickerGroupScope {
      * item is neither selected nor being explored by touch — becomes
      * [pickerSelectOnDown], which [WearPickerView] acts on in its own `ACTION_DOWN`, so the picker is
      * selected by the down rather than by the click exactly as upstream. `latestOnSelected`
-     * (`rememberUpdatedState`) is the fresh `onSelected` in the content attribute of each tune, which
-     * is also what makes the rows re-bind.
+     * (`rememberUpdatedState`) is the fresh `onSelected` inside [PickerSlots], which that view reads at
+     * click time — it is deliberately *not* what re-binds the rows: a callback is not content, and the
+     * wrapper block below is what carries a change of `selected` into the rows.
      *
      * The focus half of upstream's chain is `.hierarchicalFocusGroup(active = selected)` followed by
      * `focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier.requestFocusOnHierarchyActive()`,

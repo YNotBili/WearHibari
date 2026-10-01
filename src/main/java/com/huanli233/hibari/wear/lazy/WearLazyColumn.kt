@@ -1,10 +1,12 @@
 package com.huanli233.hibari.wear.lazy
 
+import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.wear.widget.WearableRecyclerView
 import com.huanli233.hibari.foundation.Node
 import com.huanli233.hibari.foundation.attributes.padding
 import com.huanli233.hibari.recyclerview.HibariAdapter
+import com.huanli233.hibari.recyclerview.LazyListItem
 import com.huanli233.hibari.recyclerview.LazyListScope
 import com.huanli233.hibari.recyclerview.LazyListScopeImpl
 import com.huanli233.hibari.runtime.Tunable
@@ -13,8 +15,11 @@ import com.huanli233.hibari.runtime.currentTuner
 import com.huanli233.hibari.runtime.remember
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.ref
+import com.huanli233.hibari.ui.thenViewAttribute
 import com.huanli233.hibari.ui.unit.PaddingValues
+import com.huanli233.hibari.ui.unit.StablePaddingValues
 import com.huanli233.hibari.ui.unit.dp
+import com.huanli233.hibari.ui.uniqueKey
 import com.huanli233.hibari.ui.viewClass
 import com.huanli233.hibari.wear.WearScreen
 
@@ -29,9 +34,11 @@ import com.huanli233.hibari.wear.WearScreen
  *
  * `centerItemScrollOffset` upstream is the signed distance from the centre item's anchor to the
  * focal line; from Views only an unsigned pixel distance is recoverable without walking decor
- * bounds, so it is reported as a non-negative pixel offset. The suspend `itemScrollScope`,
- * `distanceToIndexSnapshot` and the `Saver` are absent: nothing in Hibari's retune path waits on a
- * list settling, and there is no `Parcelable` state restoration layer to hook a saver into.
+ * bounds, so it is reported as a non-negative pixel offset. The suspend `itemScrollScope` and
+ * `distanceToIndexSnapshot` are not built here: nothing in Hibari's retune path waits on a list
+ * settling. Nor is the `Saver` — Hibari declares no `Saver` API in any module, which is a gap in
+ * this port rather than a wall: `View.onSaveInstanceState` plus the stable ids `Renderer
+ * .generateViewId` registers for named views would carry the centre item across a process death.
  */
 class ScalingLazyListState(
     val initialCenterItemIndex: Int = 0,
@@ -177,8 +184,15 @@ internal fun WearLazyColumn(
 ) {
     val parentTunation = currentTuner.tunation
     val adapter = remember { HibariAdapter(parentTunation) }
-    val scope = LazyListScopeImpl().apply(content)
-    adapter.submitList(scope.items)
+    // The scope is collected again every tune, never cached: an item body is a `@Tunable` lambda that
+    // captures this tune's values, so a row the differ does rebind has to be handed the new closure.
+    // Reusing one `LazyListScopeImpl` keeps only the per-item model; what is skipped is the submit,
+    // which is where the expensive part lives — see [WearListSubmittedItems].
+    val scope = remember { LazyListScopeImpl() }
+    val submitted = remember { WearListSubmittedItems() }
+    scope.reset()
+    scope.apply(content)
+    submitted.take(scope.items)?.let { adapter.submitList(it) }
 
     // Rebuilt per tune so a params change reaches the live layout manager; the manager itself is
     // remembered through the view, not the modifier, because RecyclerView keeps its own reference.
@@ -189,15 +203,130 @@ internal fun WearLazyColumn(
         modifier = modifier
             .viewClass(WearableRecyclerView::class.java)
             .padding(contentPadding)
+            // `Modifier.ref` runs only when the view is created (`Renderer.kt:163`), so the four
+            // parameters upstream re-reads on every recomposition (`foundation/lazy/ScalingLazyColumn
+            // .kt:634-704`) cannot ride on it. `contentPadding` already reaches the view through
+            // `padding`; the three below are moved here from the old `ref` block, in this order:
+            // the manager has to exist before reverse layout and edge centring can be written to it,
+            // and centring has to be re-applied after `padding` has replaced the padding it offsets
+            // itself from. The adapter, the circular-gesture flag and the state attach stay in `ref`
+            // because those genuinely happen once per view.
+            .wearListScrollableManager(callback, userScrollEnabled)
+            .wearListReverseLayout(reverseLayout)
+            .wearListEdgeCentering(centerVertically, contentPadding)
             .ref { view ->
                 if (view !is WearableRecyclerView) return@ref
-                view.layoutManager = WearScrollableLinearLayoutManager(
-                    view.context, callback, userScrollEnabled
-                ).apply { this.reverseLayout = reverseLayout }
                 view.adapter = adapter
-                view.setEdgeItemsCenteringEnabled(centerVertically)
                 view.isCircularScrollingGestureEnabled = false
                 state.attach(view)
             }
     )
+}
+
+/**
+ * `userScrollEnabled`, as a value-compared attribute rather than a creation-time constructor argument.
+ *
+ * The flag reaches scrolling through `LayoutManager.canScrollVertically()`, which `RecyclerView`
+ * re-reads on every touch, nested scroll, fling and `computeVerticalScroll*` call (verified against
+ * `androidx.recyclerview` 1.3.1: `RecyclerView.scrollBy`, `nestedScrollByInternal`,
+ * `onInterceptTouchEvent`, `onTouchEvent`, `fling`), and [WearScrollableLinearLayoutManager] answers
+ * it from [WearScrollableLinearLayoutManager.userScrollEnabled], a `var` (`lazy/WearListTransform.kt`),
+ * so a change is one write and takes effect on the next gesture without disturbing the rows or an
+ * in-flight fling.
+ *
+ * A manager that does not exist yet is the only case that swaps it. `setLayoutManager` drops every
+ * attached child and clears the recycler (`RecyclerView.setLayoutManager`), so the outgoing anchor is
+ * carried over with the platform's own save/restore pair and the outgoing `reverseLayout` is copied
+ * rather than assumed. That swap happens once per view, not once per flip.
+ */
+private fun Modifier.wearListScrollableManager(
+    callback: WearListTransformLayoutCallback,
+    userScrollEnabled: Boolean,
+): Modifier = thenViewAttribute<WearableRecyclerView, Boolean>(uniqueKey, userScrollEnabled) { enabled ->
+    val live = layoutManager as? WearScrollableLinearLayoutManager
+    if (live != null) {
+        live.userScrollEnabled = enabled
+    } else {
+        // First application only: there is no manager to write to yet, and the outgoing one is the
+        // framework default this view was built with, whose anchor and direction have to survive the
+        // swap (`setLayoutManager` recycles every child, so the position is restored explicitly).
+        val outgoing = layoutManager as? LinearLayoutManager
+        val anchor = outgoing?.onSaveInstanceState()
+        layoutManager = WearScrollableLinearLayoutManager(context, callback, enabled).apply {
+            if (outgoing != null) reverseLayout = outgoing.reverseLayout
+            if (anchor != null) onRestoreInstanceState(anchor)
+        }
+    }
+}
+
+/**
+ * `reverseLayout` through `LinearLayoutManager.setReverseLayout`, which is the platform's own live
+ * path for it: it ignores a no-op write and calls `requestLayout()` when the value moved, so the list
+ * re-lays-out instead of keeping a value that only means something to the next constructor.
+ */
+private fun Modifier.wearListReverseLayout(reverseLayout: Boolean): Modifier =
+    thenViewAttribute<WearableRecyclerView, Boolean>(uniqueKey, reverseLayout) { reversed ->
+        (layoutManager as? LinearLayoutManager)?.reverseLayout = reversed
+    }
+
+/**
+ * `centerVertically`, i.e. `WearableRecyclerView.setEdgeItemsCenteringEnabled`, which is what produces
+ * the half-viewport padding the centred arrangement needs.
+ *
+ * The compared value carries the padding on purpose. `setupCenteredPadding` (`androidx.wear:wear`
+ * 1.4.0) reads the view's *current* top and bottom padding, stores them as the pair to restore and
+ * overwrites both with `viewportHeight / 2 - firstChildHeight / 2`, so a `contentPadding` change
+ * writes plain padding over the centring offset and the list silently stops centring. Re-applying
+ * centring after every padding change is what keeps the two knobs reconcilable the way they are in
+ * Compose, where one measure pass reads both.
+ *
+ * The padding enters as [StablePaddingValues] — a data class — because a caller may hand a
+ * `PaddingValues` implementation that compares by identity, which would otherwise make every tune
+ * look like a padding change.
+ */
+private fun Modifier.wearListEdgeCentering(
+    centerVertically: Boolean,
+    contentPadding: PaddingValues,
+): Modifier = thenViewAttribute<WearableRecyclerView, WearListCentering>(
+    uniqueKey,
+    WearListCentering(centerVertically, StablePaddingValues.fromPaddingValues(contentPadding)),
+) { centering ->
+    setEdgeItemsCenteringEnabled(centering.centerVertically)
+}
+
+private data class WearListCentering(
+    val centerVertically: Boolean,
+    val contentPadding: StablePaddingValues,
+)
+
+/**
+ * Skips `submitList` for an item list that compares equal to the one already in place.
+ *
+ * `ListAdapter.submitList` hands the list to `AsyncListDiffer`, which runs a full `DiffUtil` pass on a
+ * background thread for any list that is not the *same object* as the current one (`androidx
+ * .recyclerview` 1.3.1, `AsyncListDiffer.submitList` — its only early-out is a reference comparison).
+ * For a 40-row list whose colour changed that is a Myers walk, its id maps and a thread hand-off for
+ * a diff that reports nothing: `HibariAdapter.ItemCallback` compares a row by key, content type and
+ * data, so an equal list produces an empty update and no row rebinds either way.
+ *
+ * The comparison here is that same predicate, one row at a time, so nothing is considered unchanged
+ * here that the differ would still have rebound. It mirrors `SubmittedItems`
+ * (`hibari-recyclerview` `LazyList.kt:107-119`), which is `internal` to that module and so not
+ * reachable from this one.
+ *
+ * The submitted list is a copy, not the collected one: that is what keeps the mutable scope above
+ * reusable, and handing `AsyncListDiffer` the same instance twice would hit its reference early-out
+ * and skip a diff the changed contents needed.
+ */
+private class WearListSubmittedItems {
+
+    private var last: List<LazyListItem> = emptyList()
+
+    /** Returns the list to submit, or null when it compares equal to the one already submitted. */
+    fun take(next: List<LazyListItem>): List<LazyListItem>? {
+        if (next.size == last.size && next.indices.all { last[it] == next[it] }) return null
+        val snapshot = next.toList()
+        last = snapshot
+        return snapshot
+    }
 }

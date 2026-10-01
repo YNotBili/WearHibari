@@ -1,6 +1,7 @@
 package com.huanli233.hibari.wear
 
 import android.content.Context
+import android.graphics.drawable.AnimatedVectorDrawable
 import android.provider.Settings
 import android.view.Gravity
 import com.huanli233.hibari.animation.Animatable
@@ -62,11 +63,28 @@ import kotlinx.coroutines.launch
  *  - `Modifier.focusable()` on the progress ring — hibari-wear has no focus layer to give it to.
  *  - Semantics: upstream's `clearAndSetSemantics {}` on the plate box is dropped, as everywhere in
  *    this module (no semantics layer; the same note is made in `AlertDialog.kt`).
- *  - `OpenOnPhoneDialogDefaults.Icon`, the default `content`: it is an `AnimatedVectorDrawable`
- *    loaded as `R.drawable.wear_m3c_open_on_phone_animation` — three filled paths (laptop, phone,
- *    dot) in a 520x520 viewport, held at `scaleY = 0` until `IconDelay` (67 ms) and then path-morphed
- *    and translated — and this module ships no drawable resources, so no drawable id may be invented.
- *    The slot therefore has no default, and nothing here draws a hand-made replacement for those paths.
+ *  - `OpenOnPhoneDialogDefaults.Icon` **is ported**, but it is not wired as [OpenOnPhoneDialog]'s
+ *    `content` default: see the note in that body — a `@Tunable` lambda value crashes the compiler
+ *    here, so a caller who omits `content` gets no artwork.
+ *    The artwork itself — `wear_m3c_open_on_phone_animation`,
+ *    three filled paths in a 520x520 viewport (`_R_G_L_2_G_D_0_P_0` laptop body, which carries no
+ *    animator and is therefore always drawn, plus a phone and a dot that the XML parks at
+ *    `scaleY = 0` until their first keyframes at 117 ms and 67 ms) — is copied verbatim out of the
+ *    reference tree's `app-new/src/main/res/drawable/` into this module's `res/drawable/`, under the
+ *    same key so `R.drawable.wear_m3c_open_on_phone_animation` resolves the same id as it does there.
+ *    What is *not* the same is how the play is truncated. Upstream holds the end configuration by
+ *    flipping `atEnd` on `rememberAnimatedVectorPainter(animation, atEnd)` (`material3/OpenOnPhoneDialog.kt:317-318`,
+ *    `:322-328`); the platform's `android.graphics.drawable.AnimatedVectorDrawable` has no public
+ *    seek-to-end — its stub (`android-37.1`, read with javap this session) exposes only
+ *    `start`/`stop`/`isRunning`/`reset`/`setVisible`/`registerAnimationCallback`, and it does **not**
+ *    override `Drawable.jumpToCurrentState()` — but it does override `onLevelChange(int)`, and
+ *    `Drawable.setLevel(int)` is public there, so the drawable's level is the only public scrubber and
+ *    is what [OpenOnPhoneDialogDefaults.Icon] drives after `IconDelay`. The platform class is what is
+ *    drawn, not `androidx.vectordrawable`'s `AnimatedVectorDrawableCompat`: decompiling the shipped aar
+ *    showed the wrapper buys nothing at this module's minSdk of 25 — its `start()` forwards to the
+ *    platform drawable on API 21+ and its `jumpToCurrentState()` is a bare call up to
+ *    `VectorDrawableCommon`, which does not implement one — so it would only add a hop whose level
+ *    handling cannot be checked here.
  *  - `OpenOnPhoneDialogDefaults.text` is ported as [OpenOnPhoneDialogDefaults.text], reading the
  *    upstream key from this module's own `res/values/strings.xml`.
  *  - `CurvedScope.openOnPhoneDialogCurvedText` is here as the top-level
@@ -89,15 +107,22 @@ import kotlinx.coroutines.launch
  *
  * @param curvedText filled inside the `CurvedLayout` this dialog wraps its label in, along the bottom
  *   edge; [openOnPhoneDialogCurvedText] gives upstream's sweep budget and edge padding. Upstream's
- *   parameter of this name is a *required* nullable — the default label comes from
- *   `OpenOnPhoneDialogDefaults.text`, not from this signature — and it is optional here only because
- *   this module ships no such string, so there is nothing to suggest at the call site.
+ *   parameter of this name is a *required* nullable (`material3/OpenOnPhoneDialog.kt:112`) and has no
+ *   default at all — the label it wants is built at the call site from
+ *   [OpenOnPhoneDialogDefaults.text] and [OpenOnPhoneDialogDefaults.curvedTextStyle], neither of
+ *   which a `@Tunable` default expression may reach — so null means the same thing here as upstream's
+ *   null: no curved label.
  * @param colors resolved in the body from [OpenOnPhoneDialogDefaults.colors]; a `@Tunable` default
  *   expression may not call a `@Tunable` getter.
  * @param content the icon slot. Upstream sizes this slot to nothing — the centring comes from the
  *   plate box's `contentAlignment`, and only the default icon applies [OpenOnPhoneDialogDefaults.IconSize]
- *   to itself — so a caller's own icon has to carry its own size. Null because upstream's default is
- *   the `wear_m3c_open_on_phone_animation` drawable, which is not shipped here.
+ *   to itself — so a caller's own icon has to carry its own size. Upstream's default is
+ *   `{ OpenOnPhoneDialogDefaults.Icon() }` (`material3/OpenOnPhoneDialog.kt:117`); it is nullable here
+ *   because that default cannot be written in a hoisted `@Tunable` default expression at all — see
+ *   the note in the body: neither a `@Tunable` lambda literal nor a reference to a named `@Tunable`
+ *   function survives the compiler here. So a null [content] draws NO icon at this entry point, and
+ *   a caller that wants upstream's artwork passes [OpenOnPhoneDialogDefaults.Icon]. This is a real
+ *   deviation, not a cosmetic one, and it is the one thing on this dialog that is not upstream.
  */
 @Tunable
 fun OpenOnPhoneDialog(
@@ -109,7 +134,15 @@ fun OpenOnPhoneDialog(
     content: (@Tunable () -> Unit)? = null,
 ) {
     val resolved = colors ?: OpenOnPhoneDialogDefaults.colors()
-    val iconSlot = content
+    // Upstream's parameter default is `{ OpenOnPhoneDialogDefaults.Icon() }`
+    // (`material3/OpenOnPhoneDialog.kt:117`), and it cannot be spelled here: a lambda literal of a
+    // `@Tunable` function type aborts the compiler in its invokedynamic lowering
+    // (`LambdaMetafactoryArgumentsBuilder.validateMethodParameters`), and a callable reference to a
+    // named `@Tunable` function overflows it in IR deep copy. So `null` means "no slot" and a caller
+    // that wants upstream's default passes [OpenOnPhoneDialogDefaults.Icon] itself. [content]'s
+    // `@param` says which way a null falls, and the default is only lost at this entry point —
+    // [OpenOnPhoneDialogContent] has no default to inherit upstream either.
+    val iconSlot: (@Tunable () -> Unit)? = content
     // Upstream asks the accessibility manager to stretch the timeout and dismisses through the same
     // callback the window's swipe would use; both share `dialogAutoDismiss` with ConfirmationDialog.
     dialogAutoDismiss(onDismissRequest, durationMillis)
@@ -270,6 +303,9 @@ fun OpenOnPhoneDialogContent(
             provideDialogText(resolved.textColor, null) {
                 // Upstream's `CurvedLayout(anchor = 90f, angularDirection = Reversed)`: 90f is
                 // 6 o'clock, and the caller's label is filled into the layout.
+                // Read, not `bindState`, and deliberately: a measure-policy host gets no attributes
+                // applied at creation (`Renderer.kt:99-104`) while a binding's value never changes, so
+                // a bound label would subscribe on no frame and never fade in.
                 CurvedLayout(
                     modifier = Modifier.alpha(labelOpacity.value),
                     anchor = 90f,
@@ -286,9 +322,16 @@ fun OpenOnPhoneDialogContent(
  * budget (`OpenOnPhoneMaxSweepAngle`) and `PaddingDefaults.edgePadding` on every edge — filled inside
  * the [CurvedLayout] that [OpenOnPhoneDialog] builds around its `curvedText` slot.
  *
- * [style] is required, as upstream: `OpenOnPhoneDialogDefaults.curvedTextStyle` reads the theme, so it
- * has to be resolved by the caller's slot lambda, which is a tunable context, rather than defaulted
- * from this plain scope member.
+ * [style] is required, as upstream: `OpenOnPhoneDialogDefaults.curvedTextStyle` reads the theme, and a
+ * caller cannot get that value from inside the slot it is handed. Upstream's slot is a plain lambda too
+ * (`material3/OpenOnPhoneDialog.kt:112`, `:184`, handed to `CurvedLayout(contentBuilder = …)` at
+ * `:274`), and the same holds here — the tuner is only ever an injected parameter
+ * (`transformer/TunerParamTransformer.kt:626-647`), a nested non-inline lambda is marked
+ * `isNestedScope` so the `@Tunable` calls inside it receive no tuner, and the K2 checker will not say
+ * so (`checker/TunableCallChecker.kt:113-121` walks out through a plain lambda to the enclosing
+ * `@Tunable` host), which makes a theme read in a slot a compile-then-crash, not a compile error.
+ * So resolve [OpenOnPhoneDialogDefaults.curvedTextStyle] in the caller's own `@Tunable` body and pass
+ * that value here; this member is plain on purpose, which is what lets a plain slot call it.
  *
  * One thing the style cannot carry through: upstream's `CurvedTextStyle` has two trackings, a
  * clockwise one and a wider counter-clockwise one — arc *Large* pairs `ArcLargeTrackingTop` 0.4.sp
@@ -327,8 +370,67 @@ object OpenOnPhoneDialogDefaults {
     val text: String
         @Tunable get() = currentContext.getString(R.string.wear_m3c_open_on_phone)
 
-    /** The size upstream's default icon is drawn at; private there, public here because the slot has no default. */
+    /**
+     * The size upstream's default icon is drawn at — `IconSize = 52.dp`
+     * (`material3/OpenOnPhoneDialog.kt:384`). Private there; public here because [IconSize] is also the
+     * number a caller needs to match the slot's own size when they replace the icon, which upstream's
+     * `content` parameter invites too.
+     */
     val IconSize: Dp = 52.dp
+
+    /**
+     * Upstream's `OpenOnPhoneDialogDefaults.Icon` (`material3/OpenOnPhoneDialog.kt:315-332`): the
+     * laptop/phone artwork at [IconSize], with a null `contentDescription` because the icon is
+     * decorative (`:329`). Left untinted on purpose — upstream wraps this slot in
+     * `LocalContentColor provides iconColor.value` (`:266`), which [OpenOnPhoneDialogContent]
+     * reproduces through `provideDialogIconColor`, and [FixedSizeIcon] resolves its tint off that
+     * ambient colour exactly as upstream's `Icon` does off `contentColor()`.
+     *
+     * The play control is where this engine differs, and the difference is one API rather than a
+     * category. Upstream holds the **end** configuration by flipping the painter's `atEnd` after
+     * `animatedDelay(IconDelay, reduceMotionEnabled)` (`:317-318`, `:322-328`), so under reduce motion
+     * nothing moves and the morph is otherwise snapped at 67 ms. `AnimatedVectorDrawable` has no public
+     * seek-to-end and does not implement `Drawable.jumpToCurrentState()` — read off the android-37.1
+     * stub with javap: `start`/`stop`/`isRunning`/`reset`/`setVisible`/`registerAnimationCallback` only
+     * — but it does override `onLevelChange(int)` while `Drawable.setLevel(int)` is public, so the
+     * drawable's level is the scrubber used here. Reduce motion sets the level and never calls
+     * `start()`, which makes "no motion" true by construction rather than by timing; the animated path
+     * starts the play, waits `IconDelay`, then takes the same level. Two consequences are stated rather
+     * than hidden: the level value is [OpenOnPhoneIconLevelEnd], a number this environment could not be
+     * checked against the reference docs (the stub carries no `Drawable.MAX_LEVEL` to name it), and if
+     * a device ignores the level the animated path still lands on the identical frame by itself — the
+     * artwork's own keyframes finish at 333 + 400 = 733 ms, inside the 4 s dialog — while a
+     * reduce-motion device would show only the laptop body, the one path the XML does not park at
+     * `scaleY = 0`.
+     */
+    @Tunable
+    fun Icon(modifier: Modifier = Modifier) {
+        val context = currentContext
+        // Sampled per tune, not remembered without keys: `LaunchedEffect` keys on it, so a flip reaches
+        // the play the next time this node tunes. See `ReduceMotion.kt` for why this module has no
+        // observed reduce-motion source.
+        val reduceMotion = wearReduceMotionEnabled(context)
+        val drawable = remember(context) {
+            // `Context.getDrawable(int)` is API 22, so no guard is needed above this module's minSdk
+            // of 25, and the resource's `<animated-vector>` root guarantees the platform class.
+            context.getDrawable(R.drawable.wear_m3c_open_on_phone_animation) as? AnimatedVectorDrawable
+        }
+        LaunchedEffect(drawable, reduceMotion) {
+            val icon = drawable ?: return@LaunchedEffect
+            // Upstream does not start the animation under reduce motion at all — `animatedDelay`
+            // short-circuits and `atEnd` is the only thing that moves (`:322-326`), so neither does
+            // this branch.
+            if (!reduceMotion) icon.start()
+            wearAnimatedDelay(IconDelay, reduceMotion)
+            icon.setLevel(OpenOnPhoneIconLevelEnd)
+        }
+        FixedSizeIcon(
+            image = drawable,
+            contentDescription = null,
+            iconSize = IconSize,
+            modifier = modifier,
+        )
+    }
 
     /**
      * `OpenOnPhoneMaxSweepAngle`: the arc budget this dialog's curved label gets. Public where
@@ -379,11 +481,6 @@ object OpenOnPhoneDialogDefaults {
             textColor = ColorSchemeKeyTokens.OnBackground.resolve(scheme),
         )
     }
-
-    // Only the `Icon` is unported here: upstream's is the animated
-    // `R.drawable.wear_m3c_open_on_phone_animation` vector (with its private `IconDelay` of 67 ms), and
-    // this module ships no drawable resources, so no drawable id may be invented. Its `text` is
-    // ported — see [OpenOnPhoneDialogDefaults.text].
 }
 
 /**
@@ -452,3 +549,20 @@ private val ProgressPadding: Dp = 5.dp
  * context to ask `WearScreen.edgePaddingDp` with even if it were.
  */
 private val OpenOnPhoneCurvedTextEdgePadding: Dp = 2.dp
+
+/**
+ * Upstream's private `IconDelay = 67L` (`material3/OpenOnPhoneDialog.kt:383`), the time
+ * [OpenOnPhoneDialogDefaults.Icon] waits before it holds the end configuration. It is the artwork's
+ * own first moving keyframe: the dot group starts at 67 ms and the phone at 117 ms
+ * (`res/drawable/wear_m3c_open_on_phone_animation.xml`).
+ */
+private const val IconDelay = 67L
+
+/**
+ * The end of the artwork's timeline as [OpenOnPhoneDialogDefaults.Icon] reaches it through
+ * `Drawable.setLevel`. `Drawable.MAX_LEVEL` is the platform name for this value but is not in the
+ * android-37.1 public stub (javap shows only `getLevel`, `setLevel` and `onLevelChange` on
+ * [android.graphics.drawable.Drawable]), and there was no network here to check the number against the
+ * reference docs, so it is spelled out and flagged rather than cited.
+ */
+private const val OpenOnPhoneIconLevelEnd = 10000

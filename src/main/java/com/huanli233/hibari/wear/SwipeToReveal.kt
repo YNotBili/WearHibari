@@ -50,10 +50,7 @@
  *    against the platform `View.performHapticFeedback` in the view file, because Hibari has no
  *    `LocalHapticFeedback` (already recorded at `WEAR_PORT_CONTRACT.md:120-127` and
  *    `Stepper.kt` header note 7).
- * 5. `LocalTextConfiguration` does not exist here, so `ActionText`'s `TextOverflow.Ellipsis` +
- *    `maxLines = 1` (`:1202-1211`) is applied per call on the button's own text view — see
- *    `RevealActionButtons.kt`.
- * 6. `CustomTouchSlopProvider(newTouchSlop = touchSlop * CustomTouchSlopMultiplier)` (`:317-319`,
+ * 5. `CustomTouchSlopProvider(newTouchSlop = touchSlop * CustomTouchSlopMultiplier)` (`:317-319`,
  *    multiplier `1.20f` at `:1924`) is ported and used: the component resolves
  *    [currentTouchSlop], multiplies it by [SwipeToRevealDefaults.CustomTouchSlopMultiplier], wraps its
  *    own subtree in [CustomTouchSlopProvider] and hands the same number to the box, because a `View`

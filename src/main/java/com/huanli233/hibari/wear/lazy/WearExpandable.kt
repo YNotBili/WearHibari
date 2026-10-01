@@ -50,9 +50,9 @@ import kotlinx.coroutines.launch
  *    indirection over the same data.
  *  - `rememberExpandableState(initiallyExpanded, expandAnimationSpec, collapseAnimationSpec)` and
  *    `ExpandableState.saver` are **not ported**: the constructor is public in the key-set shape, so
- *    `remember { ExpandableState(...) }` at the call site does the remembering, and Hibari has no
- *    `rememberSaveable`/`Saver` layer to hook a saver into (same omission already documented on
- *    [ScalingLazyListState]).
+ *    `remember { ExpandableState(...) }` at the call site does the remembering, and Hibari declares
+ *    no `rememberSaveable`/`Saver` API in any module to hook a saver into — the same omission
+ *    [ScalingLazyListState] documents, and there with the reason it is a gap rather than a wall.
  *  - `@FrequentlyChangingValue` on the progress getter has no Hibari equivalent and is dropped; it
  *    is a lint annotation, not behaviour.
  *

@@ -36,9 +36,26 @@ import com.huanli233.hibari.wear.attributes.textStyle
  * rely on the seed — [Card], [ListHeader], the scaffold family — provide the colour explicitly
  * instead of leaving this component to guess at it.
  *
+ * [textAlign], [overflow] and [maxLines] fall back to [LocalTextConfiguration] when the caller
+ * leaves them unset, as upstream's defaults do
+ * (`material3/Text.kt:103`/`:105`/`:107` — `LocalTextConfiguration.current.textAlign`,
+ * `.overflow`, `.maxLines`). They are spelled as nullable sentinels rather than as that expression
+ * directly because a `@Tunable` default-parameter expression is hoisted into the non-`@Tunable`
+ * `$default` method, which has no tuner to read a `TunationLocal` with; the fallback is applied in
+ * the body instead. The unset default the local seeds with is `TextConfigurationDefaults` — `null`
+ * alignment, `Clip`, `Int.MAX_VALUE` lines — i.e. the values this signature used to hard-code, so a
+ * call outside any provider behaves exactly as before.
+ *
  * @param style Defaults to null rather than `currentTextStyle()` because a `@Tunable` default
  *   expression is hoisted into a non-`@Tunable` `$default` method, which cannot read
  *   `LocalTextStyle`; the resolution happens in the body.
+ * @param overflow Only [TextOverflow.Ellipsis] needs its own wiring — `Modifier.ellipsis`
+ *   (`foundation/TextViewAttributes.kt:89-102`) sets `TextView.ellipsize` to `TruncateAt.END`.
+ *   [TextOverflow.Clip] is what a `TextView` with no `ellipsize` already does at the [maxLines]
+ *   bound, so it asks for nothing. [TextOverflow.Visible] is the one the engine cannot follow: a
+ *   `TextView` never paints outside the bounds it was measured to, so it renders exactly as
+ *   [TextOverflow.Clip] — upstream asks for it at `material3/Picker.kt:686` and
+ *   `material3/FadingExpandingLabel.kt:189`.
  */
 @Tunable
 fun Text(
@@ -50,11 +67,17 @@ fun Text(
     letterSpacing: TextUnit = TextUnit.Unspecified,
     lineHeight: TextUnit = TextUnit.Unspecified,
     textAlign: TextAlign? = null,
-    maxLines: Int = Int.MAX_VALUE,
+    maxLines: Int? = null,
     minLines: Int = 1,
-    overflow: TextOverflow = TextOverflow.Clip,
+    overflow: TextOverflow? = null,
     style: TextStyle? = null,
 ) {
+    // One read per parameter the caller left unset, as upstream's default expressions are
+    // (`material3/Text.kt:103`/`:105`/`:107`): a read subscribes this body to the local, so a `Text`
+    // handed all three never subscribes to it.
+    val resolvedTextAlign = textAlign ?: LocalTextConfiguration.current.textAlign
+    val resolvedMaxLines = maxLines ?: LocalTextConfiguration.current.maxLines
+    val resolvedOverflow = overflow ?: LocalTextConfiguration.current.overflow
     val ambient = LocalContentColor.current
     val resolvedColor = color.takeOrElse { ambient }
     val base = style ?: currentTextStyle()
@@ -71,10 +94,10 @@ fun Text(
             .text(text)
             .textStyle(merged)
             .textColorIfSpecified(resolvedColor)
-            .run { if (textAlign != null) textAlignAttr(textAlign) else this }
+            .run { if (resolvedTextAlign != null) textAlignAttr(resolvedTextAlign) else this }
             .minLines(minLines)
-            .maxLines(maxLines)
-            .run { if (overflow == TextOverflow.Ellipsis) ellipsis(TextTruncateAt.END) else this }
+            .maxLines(resolvedMaxLines)
+            .run { if (resolvedOverflow == TextOverflow.Ellipsis) ellipsis(TextTruncateAt.END) else this }
     )
 }
 

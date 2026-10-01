@@ -6,10 +6,11 @@ import com.huanli233.hibari.foundation.Node
 import com.huanli233.hibari.runtime.HibariView
 import com.huanli233.hibari.runtime.Tunable
 import com.huanli233.hibari.runtime.remember
+import com.huanli233.hibari.runtime.effects.rememberCoroutineScope
 import com.huanli233.hibari.ui.Modifier
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
-import java.util.Collections
-import java.util.WeakHashMap
 
 /**
  * The bookkeeping half of `androidx.wear.compose.foundation`'s hierarchical focus, ported onto the
@@ -179,13 +180,19 @@ class HierarchicalFocusCoordinator internal constructor(val root: View) {
     }
 
     companion object {
-        private val Coordinators = Collections.synchronizedMap(
-            WeakHashMap<View, WeakReference<HierarchicalFocusCoordinator>>()
-        )
-
         /**
-         * The coordinator owning [view]'s screen: created on first use and cached against the
-         * top-most ancestor, so every node in one `HibariView` shares one active path.
+         * The coordinator owning [view]'s screen: created on first use and cached as a keyed tag on
+         * the top-most ancestor, so every node in one `HibariView` shares one active path.
+         *
+         * The store is a View tag for the same reason the node store in `HierarchicalFocus.kt` is one,
+         * and the key here really is a View: it is the root `of()` just walked to, while the class holds
+         * `val root: View` — so the old map's `WeakReference` value existed to stop that map pinning
+         * its own key, an edge a tag has no equivalent of. The View <-> coordinator cycle dies with the
+         * screen like anything else in it, and the lock the old store took on every `markChanged()` is
+         * gone. Two consequences: a coordinator now lives exactly as long as its root View, so a pooled
+         * root keeps its (drained, still correct) coordinator; and `of()` is public, so calling it on a
+         * detached View leaves that View tagged. Main-thread only, like both callers here
+         * ([HierarchicalFocusNode.markChanged] and the detach callback in `HierarchicalFocus.kt`).
          */
         @JvmStatic
         fun of(view: View): HierarchicalFocusCoordinator {
@@ -201,15 +208,22 @@ class HierarchicalFocusCoordinator internal constructor(val root: View) {
                     break
                 }
             }
-            synchronized(Coordinators) {
-                Coordinators[root]?.get()?.let { return it }
-                val created = HierarchicalFocusCoordinator(root)
-                Coordinators[root] = WeakReference(created)
-                return created
+            (root.getTag(hierarchicalFocusCoordinatorKey) as? HierarchicalFocusCoordinator)?.let {
+                return it
             }
+            val created = HierarchicalFocusCoordinator(root)
+            root.setTag(hierarchicalFocusCoordinatorKey, created)
+            return created
         }
     }
 }
+
+/**
+ * Tag key for the coordinator of one screen root, from this module's `res/values/ids.xml` —
+ * `View.setTag(int, Object)` needs a real resource id, which is settled at
+ * `HierarchicalFocus.kt`'s store documentation.
+ */
+private val hierarchicalFocusCoordinatorKey = R.id.hibari_hierarchical_focus_coordinator
 
 /**
  * A handle to one focusable View, standing in for `androidx.compose.ui.focus.FocusRequester`.
@@ -321,17 +335,18 @@ fun rememberActiveFocusRequester(): HierarchicalFocusRequester {
  * (HierarchicalFocusCoordinator.kt:53-61), deprecated as upstream deprecates it: an invisible
  * [HierarchicalFocusNode]-bearing node that reports when the active path gains or loses this subtree.
  *
- * Deviation: the lambda takes no `CoroutineScope` receiver. Upstream wraps the callback in
- * `rememberCoroutineScope().launch { ... }`; Hibari exposes no coroutine-scope local to a `@Tunable`
- * (only `LocalLifecycleOwner`, whose lifecycle scope outlives the node), and the callback already
- * arrives on the main thread from a `View.post`, so a scope would only add a suspension point and a
- * cancellation the port cannot honour. Callers that need a coroutine should capture one themselves.
+ * The receiver and the launch are upstream's, and both are real here: `rememberCoroutineScope`
+ * (`hibari-runtime/.../effects/Effects.kt:59`) is the counterpart of Compose's, so the callback is
+ * dispatched into that scope exactly as `:59-60` does — even though the focus change itself already
+ * arrives on the main thread from a `View.post`, which is why a caller could get away without the
+ * launch, but the scope is what lets a caller cancel or suspend its own handler.
  */
 @Deprecated(
     "Replaced by Modifier.requestFocusOnHierarchyActive(), or the new LocalScreenIsActive, use that instead",
     level = DeprecationLevel.WARNING,
 )
 @Tunable
-fun ActiveFocusListener(onFocusChanged: (Boolean) -> Unit) {
-    Node(Modifier.hierarchicalOnFocusChanged { onFocusChanged(it) })
+fun ActiveFocusListener(onFocusChanged: CoroutineScope.(Boolean) -> Unit) {
+    val scope = rememberCoroutineScope()
+    Node(Modifier.hierarchicalOnFocusChanged { scope.launch { onFocusChanged(it) } })
 }

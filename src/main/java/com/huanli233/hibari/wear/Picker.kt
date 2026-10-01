@@ -21,6 +21,7 @@ import com.huanli233.hibari.ui.viewClass
 import com.huanli233.hibari.wear.lazy.ListTransformParams
 import com.huanli233.hibari.wear.view.PickerContentProps
 import com.huanli233.hibari.wear.view.PickerProps
+import com.huanli233.hibari.wear.view.PickerSlots
 import com.huanli233.hibari.wear.view.WearPickerView
 
 /**
@@ -42,7 +43,7 @@ import com.huanli233.hibari.wear.view.WearPickerView
  *    when the attributes land and again on attach, the exploration state when a gesture happens —
  *    rather than recomposing the picker when they change. Upstream's `ScalingLazyColumn` swaps in
  *    `ReduceMotionScalingParams` under reduce motion, and so does [WearPickerView]; that is why
- *    [pickerScalingParams] is not handed to the view as the final word.
+ *    [PickerScalingParams] is not handed to the view as the final word.
  *  - `animateScrollToOption` reaches the right item but not along upstream's curve: upstream's timing
  *    comes from Compose's `LazyListState.animateScrollToItem`, which is outside the reference tree.
  *    See [WearPickerView.animateScrollToOption].
@@ -101,6 +102,23 @@ fun Picker(
     val resolvedGradientColor = gradientColor ?: MaterialTheme.colorScheme.background
     val valueDescription =
         if (!state.isScrollInProgress) contentDescription?.invoke() else null
+    // One holder for the slot lambdas, refreshed in place: its identity never moves, so the attribute
+    // compares equal on a retune that replaced no block, and [PickerSlots.generation] is what says
+    // whether the rows have to be re-tuned.
+    //
+    // `pickerScope` is in the key because a block that reads only its receiver recaptures nothing when
+    // the state underneath it is swapped, so the generation cannot see that swap: a new holder is the
+    // only value that re-tunes the rows onto the state they are now meant to show.
+    val slots = remember(parentTunation, pickerScope) {
+        PickerSlots(parentTunation, pickerScope, option, readOnlyLabel, onSelected)
+    }
+    slots.update(
+        parentTunation = parentTunation,
+        scope = pickerScope,
+        option = option,
+        readOnlyLabel = readOnlyLabel,
+        onSelected = onSelected,
+    )
 
     Node(
         modifier = modifier
@@ -111,33 +129,28 @@ fun Picker(
                     verticalSpacingPx = verticalSpacing.toPx(context),
                     gradientRatio = gradientRatio,
                     gradientColor = resolvedGradientColor,
-                    transform = pickerScalingParams(),
+                    transform = PickerScalingParams,
                     readOnly = readOnly,
                     userScrollEnabled = userScrollEnabled,
                     rotary = rotary,
                     valueDescription = valueDescription,
                 )
             )
-            .pickerContent(
-                PickerContentProps(
-                    parentTunation = parentTunation,
-                    scope = pickerScope,
-                    option = option,
-                    readOnlyLabel = readOnlyLabel,
-                    onSelected = onSelected,
-                )
-            )
+            .pickerContent(PickerContentProps(slots, slots.generation))
     )
 }
 
 /**
  * Creates a [PickerState] that is remembered across retunes.
  *
- * Upstream wraps this in `rememberSaveable(..., saver = PickerState.Saver)`. There is no
- * `rememberSaveable`, no `Saver` type and no parcelable restoration layer in Hibari's retune path —
- * the same gap [com.huanli233.hibari.wear.lazy.ScalingLazyListState] documents — so the state is
- * plain `remember` and does not survive an activity recreation; [PickerState] therefore carries no
- * `Saver` companion either, rather than faking one.
+ * Upstream wraps this in `rememberSaveable(..., saver = PickerState.Saver)`. Hibari declares no
+ * `rememberSaveable` and no `Saver` type in any module — a repo-wide grep for either hits only the
+ * comments that say so — so the state is plain `remember` and does not survive an activity
+ * recreation; [PickerState] therefore carries no `Saver` companion either, rather than faking one.
+ * That is a gap in this port, not a wall: the same route [com.huanli233.hibari.wear.lazy
+ * .ScalingLazyListState] documents (the view's own `onSaveInstanceState`/`onRestoreInstanceState`
+ * pair over the stable ids `Renderer.generateViewId` registers) would carry `selectedIndex` and
+ * `numberOfOptions` across a process death, and nobody has written it.
  *
  * @param initialNumberOfOptions the number of options.
  * @param initiallySelectedIndex the index of the option to show in the center at the start, zero-based.
@@ -409,8 +422,13 @@ private fun positiveModulo(n: Int, mod: Int) = ((n % mod) + mod) % mod
  *
  * `reduceMotion` is left at its default: upstream resolves it inside `ScalingLazyColumn`, so it is the
  * view's to fill in once per attribute change.
+ *
+ * Shared, because all eight numbers are literals and `CubicBezierEasing` compares them
+ * (`hibari-animation/src/main/java/com/huanli233/hibari.animation/Easing.kt:154-160`): what the
+ * single instance saves is the per-tune allocation and the root solve in that constructor (`:105-116`),
+ * not any change of what the diff decides.
  */
-private fun pickerScalingParams(): ListTransformParams = ListTransformParams(
+private val PickerScalingParams: ListTransformParams = ListTransformParams(
     edgeScale = 0.45f,
     edgeAlpha = 1.0f,
     minElementHeight = 0.0f,

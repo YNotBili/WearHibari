@@ -6,6 +6,7 @@ import com.huanli233.hibari.foundation.BoxScope
 import com.huanli233.hibari.foundation.attributes.size
 import com.huanli233.hibari.runtime.Tunable
 import com.huanli233.hibari.runtime.currentContext
+import com.huanli233.hibari.runtime.remember
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.geometry.Shape
 import com.huanli233.hibari.ui.graphics.Color
@@ -60,12 +61,20 @@ fun IconButton(
     border: BorderStroke? = null,
     content: @Tunable BoxScope.() -> Unit,
 ) {
+    // The default colour set — two token resolves and one alpha write — is rebuilt on every tune
+    // otherwise. `remember`'s calculation is `@DisallowTunableCalls` (`runtime/Tunables.kt:18`), so the
+    // scheme is read here and the private extension `IconButtonDefaults.iconButtonColors()` delegates
+    // to — `ColorScheme.defaultIconButtonColors` — is applied to it: the same expression, rebuilt only
+    // when the scheme instance changes (`ColorScheme` compares by identity). Memoised outside the elvis
+    // so the slot is visited once per tune whichever branch `colors` takes.
+    val scheme = MaterialTheme.colorScheme
+    val defaultColors = remember(scheme) { scheme.defaultIconButtonColors() }
     iconButton(
         onClick,
         modifier,
         enabled,
         shapes ?: IconButtonDefaults.shapes(),
-        colors ?: IconButtonDefaults.iconButtonColors(),
+        colors ?: defaultColors,
         border,
         content,
     )
@@ -82,12 +91,15 @@ fun FilledIconButton(
     border: BorderStroke? = null,
     content: @Tunable BoxScope.() -> Unit,
 ) {
+    // Memoised as in [IconButton]; `filledIconButtonColors()` is this extension and nothing else.
+    val scheme = MaterialTheme.colorScheme
+    val defaultColors = remember(scheme) { scheme.defaultFilledIconButtonColors() }
     iconButton(
         onClick,
         modifier,
         enabled,
         shapes ?: IconButtonDefaults.shapes(),
-        colors ?: IconButtonDefaults.filledIconButtonColors(),
+        colors ?: defaultColors,
         border,
         content,
     )
@@ -104,12 +116,15 @@ fun FilledTonalIconButton(
     border: BorderStroke? = null,
     content: @Tunable BoxScope.() -> Unit,
 ) {
+    // Memoised as in [IconButton]; `filledTonalIconButtonColors()` is this extension and nothing else.
+    val scheme = MaterialTheme.colorScheme
+    val defaultColors = remember(scheme) { scheme.defaultFilledTonalIconButtonColors() }
     iconButton(
         onClick,
         modifier,
         enabled,
         shapes ?: IconButtonDefaults.shapes(),
-        colors ?: IconButtonDefaults.filledTonalIconButtonColors(),
+        colors ?: defaultColors,
         border,
         content,
     )
@@ -132,12 +147,15 @@ fun OutlinedIconButton(
     border: BorderStroke? = null,
     content: @Tunable BoxScope.() -> Unit,
 ) {
+    // Memoised as in [IconButton]; `outlinedIconButtonColors()` is this extension and nothing else.
+    val scheme = MaterialTheme.colorScheme
+    val defaultColors = remember(scheme) { scheme.defaultOutlinedIconButtonColors() }
     iconButton(
         onClick,
         modifier,
         enabled,
         shapes ?: IconButtonDefaults.shapes(),
-        colors ?: IconButtonDefaults.outlinedIconButtonColors(),
+        colors ?: defaultColors,
         border ?: IconButtonDefaults.outlinedButtonBorder(enabled),
         content,
     )
@@ -154,6 +172,21 @@ private fun iconButton(
     content: @Tunable BoxScope.() -> Unit,
 ) {
     val scope = content
+    // A fresh spec every tune costs a ContainerSpec plus a boxed disabled colour
+    // (`ContainerSpec.disabledContainerColor` is `Color?`) and then a field-by-field compare in the
+    // container attribute (`ui/Attribute.kt:68-79` reads only key, value and reuseSupported). All four
+    // inputs are keys and all four compare by value — `IconButtonColors`/`IconButtonShapes` override
+    // `equals`, `BorderStroke` is a data class, `enabled` is a boxed constant — so an equal-but-rebuilt
+    // argument still hits. `enabled` is an input, not a detail: it picks which colour the spec carries.
+    val spec = remember(shapes, colors, border, enabled) {
+        ContainerSpec(
+            shape = shapes.shape,
+            containerColor = colors.containerColor(enabled),
+            border = border,
+            pressedShape = shapes.pressedShape.takeIf { it != shapes.shape },
+            disabledContainerColor = colors.disabledContainerColor,
+        )
+    }
     Box(
         modifier = Modifier
             // Upstream appends its own size to the caller's chain
@@ -167,15 +200,7 @@ private fun iconButton(
             // same precedence the default has to sit first and the caller's chain after it.
             .size(DpSize(IconButtonDefaults.DefaultButtonSize, IconButtonDefaults.DefaultButtonSize))
             .then(modifier)
-            .container(
-                ContainerSpec(
-                    shape = shapes.shape,
-                    containerColor = colors.containerColor(enabled),
-                    border = border,
-                    pressedShape = shapes.pressedShape.takeIf { it != shapes.shape },
-                    disabledContainerColor = colors.disabledContainerColor,
-                ),
-            )
+            .container(spec)
             .clickable(enabled, onClick),
         content = {
             // `Box(contentAlignment = Alignment.Center)` (`material3/RoundButton.kt:67`). A Views
@@ -305,9 +330,18 @@ object IconButtonDefaults {
     val minimumVerticalListContentPadding: Dp
         @Tunable get() = screenHeightFraction(SMALL_VERTICAL_CONTENT_PADDING_FRACTION)
 
+    /**
+     * The static shapes: [shape] on both ends, so nothing morphs. A `private val`, not because a
+     * `static val` is the usual answer here (a top-level constant cannot see a `TunationLocal`, which
+     * is why every colour set in this module is `remember`ed rather than hoisted) but because this
+     * expression reads no local at all — [shape] is `ShapeTokens.CornerFull` — so there is nothing to
+     * freeze and one object per tune to stop building.
+     */
+    private val staticIconButtonShapes = IconButtonShapes(shape = shape)
+
     /** The static shapes: [shape] on both ends, so nothing morphs. */
     @Tunable
-    fun shapes(): IconButtonShapes = IconButtonShapes(shape = shape)
+    fun shapes(): IconButtonShapes = staticIconButtonShapes
 
     /** [shapes] with a caller's own outline. */
     @Tunable
@@ -339,18 +373,32 @@ object IconButtonDefaults {
             if (half > SmallIconSize) half else SmallIconSize
         }
 
-    /** `ButtonDefaults.outlinedButtonBorder(enabled)` (`material3/Button.kt:1766-1774`). */
+    /**
+     * `ButtonDefaults.outlinedButtonBorder(enabled)` (`material3/Button.kt:1766-1774`).
+     *
+     * Memoised on the scheme: an `OutlinedIconButton` otherwise resolved this colour and boxed a new
+     * `BorderStroke` on every tune, and the tune is what any state read in the caller causes — there is
+     * no group skipping yet (`runtime/GroupCensus.kt:7` calls itself a census, not a decision). The
+     * calculation is `@DisallowTunableCalls` (`runtime/Tunables.kt:18`), so the scheme is read outside
+     * the block and the identical expression applied to it. `enabled` is a key because it picks which
+     * branch the stroke colour comes from.
+     */
     @Tunable
-    fun outlinedButtonBorder(enabled: Boolean): BorderStroke = BorderStroke(
-        OutlinedButtonTokens.ContainerBorderWidth,
-        if (enabled) {
-            OutlinedButtonTokens.ContainerBorderColor.resolve(MaterialTheme.colorScheme)
-        } else {
-            OutlinedButtonTokens.DisabledContainerBorderColor
-                .resolve(MaterialTheme.colorScheme)
-                .toDisabledColor(OutlinedButtonTokens.DisabledContainerBorderOpacity)
-        },
-    )
+    fun outlinedButtonBorder(enabled: Boolean): BorderStroke {
+        val scheme = MaterialTheme.colorScheme
+        return remember(scheme, enabled) {
+            BorderStroke(
+                OutlinedButtonTokens.ContainerBorderWidth,
+                if (enabled) {
+                    OutlinedButtonTokens.ContainerBorderColor.resolve(scheme)
+                } else {
+                    OutlinedButtonTokens.DisabledContainerBorderColor
+                        .resolve(scheme)
+                        .toDisabledColor(OutlinedButtonTokens.DisabledContainerBorderOpacity)
+                },
+            )
+        }
+    }
 
     @Tunable
     fun iconButtonColors(): IconButtonColors =

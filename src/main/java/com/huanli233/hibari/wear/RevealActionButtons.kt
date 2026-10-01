@@ -6,6 +6,7 @@ import com.huanli233.hibari.foundation.attributes.height
 import com.huanli233.hibari.foundation.attributes.paddingRelative
 import com.huanli233.hibari.foundation.attributes.width
 import com.huanli233.hibari.runtime.Tunable
+import com.huanli233.hibari.runtime.TunationLocalProvider
 import com.huanli233.hibari.runtime.currentContext
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.geometry.CircleShape
@@ -185,16 +186,12 @@ public fun SwipeToRevealScope.UndoActionButton(
  * (`material3/SwipeToReveal.kt:1062-1196`), an `internal` function which is why the shape of this one
  * carries an explicit `scope` rather than a receiver.
  *
- * Three upstream pieces are resolved differently, the last one module-wide rather than here:
+ * Two upstream pieces are resolved differently, the second one module-wide rather than here:
  *  - `buttonColors(containerColor = …, contentColor = …)` (`:1160`) copies the theme's default
  *    `ButtonColors` over the two given colours; Hibari's [ButtonDefaults] has no such parameterised
  *    factory, so the two colours are resolved here with the same `takeOrElse` defaults upstream applies
  *    just above (`:1074-1107`) and handed straight to a circular [ContainerSpec]. The disabled variants
  *    are not carried: upstream's `ActionButton` never passes `enabled`, so they can never render.
- *  - `ActionText`'s `LocalTextConfiguration(textAlign = current, overflow = Ellipsis, maxLines = 1)`
- *    (`:1205-1210`) has no counterpart — Hibari has no `LocalTextConfiguration`, and the slot is opaque
- *    content that this module cannot restyle — so a text that must not wrap has to declare
- *    `maxLines = 1` / `ellipsis` itself, the way every other text slot in this module does.
  *  - The button is touch-clickable only. Upstream's `ActionButton` *is* a `Button` (`:1122`), and wear
  *    m3's `Button` routes its click through Compose's `Modifier.clickable`
  *    (`materialcore/RoundButton.kt:86`), which per Compose also makes the element a keyboard/D-pad
@@ -333,7 +330,18 @@ private fun RevealActionButton(
                         start = if (iconSlot != null) RevealIconAndTextPadding else 0.dp,
                     ),
                 ) {
-                    provideContentColor(resolvedContent) { textSlot() }
+                    // Upstream's `ActionText` (`material3/SwipeToReveal.kt:1202-1211`) keeps the ambient
+                    // `textAlign`, pins `Ellipsis`, and budgets the slot at one line — the slot is opaque
+                    // caller content, so the budget has to ride down through the local.
+                    TunationLocalProvider(
+                        LocalContentColor provides resolvedContent,
+                        LocalTextConfiguration provides TextConfiguration(
+                            textAlign = LocalTextConfiguration.current.textAlign,
+                            overflow = TextOverflow.Ellipsis,
+                            maxLines = 1,
+                        ),
+                        content = { textSlot() },
+                    )
                 }
             }
         }

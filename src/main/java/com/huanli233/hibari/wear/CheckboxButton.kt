@@ -21,9 +21,9 @@ import com.huanli233.hibari.ui.geometry.CornerBasedShape
 import com.huanli233.hibari.ui.geometry.Shape
 import com.huanli233.hibari.ui.graphics.Color
 import com.huanli233.hibari.ui.graphics.takeOrElse
+import com.huanli233.hibari.ui.text.TextAlign
 import com.huanli233.hibari.ui.text.TextStyle
 import com.huanli233.hibari.ui.thenViewAttribute
-import com.huanli233.hibari.ui.thenViewAttributeIfNotNull
 import com.huanli233.hibari.ui.unit.Dp
 import com.huanli233.hibari.ui.unit.DpSize
 import com.huanli233.hibari.ui.unit.PaddingValues
@@ -46,10 +46,11 @@ import com.huanli233.hibari.wear.view.WearCheckboxButtonView
  *
  * Three kinds of deviation are recorded below and in the classes themselves: parameters that need a
  * Compose runtime (`interactionSource`, `transformation`, ripple), the accessibility/haptics bundle
- * (`Role`, `stateDescription`, `onClickLabel`, `LocalHapticFeedback`), and the colour animation
- * (`animateSelectionColor`), which is a plain resolve here. The colour *values* are all ported; only
- * their tweening is missing - `WearSwitchButtonView` in this module does drive a slow-spec
- * cross-fade, so this is unpicked work rather than an unavailable mechanism.
+ * (`Role`, `onClickLabel`, `LocalHapticFeedback` — `stateDescription` is ported, by
+ * [checkboxButtonStateDescription], and only on API 30+ because that is the only channel the platform
+ * gives it), and the colour animation (`animateSelectionColor`), which is a plain resolve here. The
+ * colour *values* are all ported; only their tweening is missing - `WearSwitchButtonView` in this module
+ * does drive a slow-spec cross-fade, so this is unpicked work rather than an unavailable mechanism.
  *
  * Duplication note: the stadium row `CheckboxButton` drives through `materialcore.ToggleButton` is
  * re-declared here privately, because `RadioButton.kt` and `SwitchButton.kt` were ported in parallel
@@ -142,7 +143,8 @@ fun CheckboxButton(
                 )
                 .clickable(enabled = enabled) { onCheckedChange(!checked) }
                 .padding(contentPadding)
-                .minHeight(CheckboxButtonMinHeight),
+                .minHeight(CheckboxButtonMinHeight)
+                .checkboxButtonStateDescription(checked),
         ) {
             if (iconScope != null) {
                 // `ToggleButtonIcon` is `Box(wrapContentSize(Center))`, and the frame is exactly as
@@ -308,7 +310,9 @@ fun SplitCheckboxButton(
                     )
                     .clickable(enabled = enabled) { onCheckedChange(!checked) }
                     .padding(contentPadding)
-                    .checkboxButtonContentDescription(toggleContentDescription),
+                    .checkboxButtonContentDescription(toggleContentDescription)
+                    // Upstream puts the state description on this same section (`:412`), not on the row.
+                    .checkboxButtonStateDescription(checked),
             ) {
                 Node(
                     modifier = Modifier
@@ -754,7 +758,7 @@ class SplitCheckboxButtonColors(
  * `CheckboxButtonDefaults`, name and members included.
  *
  * The bare `Checkbox` of `SelectionControls.kt` is a different component with its own
- * [BareCheckboxDefaults] - material3 publishes no bare checkbox to name it after, only a
+ * [CheckboxDefaults] - material3 publishes no bare checkbox to name it after, only a
  * `private fun Checkbox` drawing primitive inside its own `CheckboxButton.kt`.
  *
  * Members are upstream's; the two `Dp`/`PaddingValues` constants are declared ahead of the colour
@@ -1014,9 +1018,9 @@ private fun defaultSplitCheckboxButtonColors(): SplitCheckboxButtonColors =
  * The `RowScope.Labels` of CheckboxButton.kt: a weighted column holding the label row and, when the
  * slot is filled, the 1.dp spacer and the secondary label row.
  *
- * Upstream also injects a `TextConfiguration` (ellipsis, 3 lines for the label, 2 for the secondary)
- * that `Text` reads from a composition local. Hibari has no such local, so the line limits stay the
- * caller's business: the slots here only receive the colour and the type scale role.
+ * Upstream's `TextConfiguration` (ellipsis, 3 lines for the label, 2 for the secondary) is identical
+ * between `CheckboxButton` (`material3/CheckboxButton.kt:166-171`, `:200-205`) and
+ * `SplitCheckboxButton` (`:359-364`, `:372-377`), so both ride down from here.
  */
 @Tunable
 private fun RowScope.CheckboxButtonLabels(
@@ -1034,12 +1038,16 @@ private fun RowScope.CheckboxButtonLabels(
         TunationLocalProvider(
             LocalContentColor provides labelColor,
             LocalTextStyle provides labelStyle,
+            LocalTextConfiguration provides
+                TextConfiguration(TextAlign.Start, TextOverflow.Ellipsis, maxLines = 3),
         ) { Row { labelScope() } }
         if (secondaryScope != null) {
             Spacer(Modifier.size(DpSize(labelSpacerSize, labelSpacerSize)))
             TunationLocalProvider(
                 LocalContentColor provides secondaryLabelColor,
                 LocalTextStyle provides secondaryLabelStyle,
+                LocalTextConfiguration provides
+                    TextConfiguration(TextAlign.Start, TextOverflow.Ellipsis, maxLines = 2),
             ) { Row { secondaryScope() } }
         }
     }
@@ -1081,11 +1089,35 @@ private fun Modifier.checkboxButtonControl(
 private fun Modifier.checkboxButtonMinWidth(width: Dp): Modifier =
     this.thenViewAttribute<View, Dp>(uniqueKey, width) { minimumWidth = it.toPx(this) }
 
-/** The `semantics { contentDescription = toggleContentDescription }` of the toggle section. */
+/**
+ * The `semantics { contentDescription = toggleContentDescription }` of the toggle section.
+ *
+ * Emitted even when [description] is null, because null is not a behaviour here: it is the field's
+ * default on a freshly-created view, and the one receiver of this modifier — the `Box` holding the
+ * toggle section of [SplitCheckboxButton] — is a `FrameLayout`, not text-bearing, so a null
+ * description contributes nothing to the accessibility node either way. That is what upstream's
+ * absent `semantics` leaves too (reference `material3/CheckboxButton.kt:421-425`), and keeping the
+ * attribute in the chain is what lets a description turning off patch instead of recreating the
+ * section and its whole subtree.
+ */
 private fun Modifier.checkboxButtonContentDescription(description: String?): Modifier =
-    this.thenViewAttributeIfNotNull<View, String>(uniqueKey, description) {
+    this.thenViewAttribute<View, String?>(uniqueKey, description) {
         contentDescription = it
     }
+
+/**
+ * The `semantics { stateDescription = currentStateDescription }` of upstream's two checkbox rows —
+ * on [CheckboxButton]'s own root at `material3/CheckboxButton.kt:187-190` and on the *toggle section*
+ * of [SplitCheckboxButton] at `:412` — with the value picked from `checked` at `:145-150` and `:312-317`
+ * out of the two keys `internal/Strings.kt:116-119` name. The mechanism, the API 30 gate and why the
+ * write goes through a delegate are all in [wearStateDescription].
+ */
+private fun Modifier.checkboxButtonStateDescription(checked: Boolean): Modifier =
+    this.wearStateDescription(
+        checked,
+        R.string.wear_m3c_checked_state_description,
+        R.string.wear_m3c_not_checked_state_description,
+    )
 
 /**
  * Upstream clips each section to `SPLIT_SECTIONS_SHAPE` and the row to the container shape, so a

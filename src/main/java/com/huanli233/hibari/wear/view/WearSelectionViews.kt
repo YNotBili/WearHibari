@@ -5,22 +5,30 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
+import android.view.animation.PathInterpolator
 import com.huanli233.hibari.ui.graphics.Color
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * Selection controls ported from `materialcore/SelectionControls.kt`, `material3/AnimateTick.kt`
- * and the private draw functions of CheckboxButton / RadioButton / SwitchButton.
+ * Selection controls ported from `materialcore/SelectionControls.kt` (the drawing behind
+ * `material/ToggleControl.kt`'s bare `Checkbox` / `Switch` / `RadioButton`), which is what
+ * `SelectionControls.kt` drives these three views.
  *
- * All three are driven by a single `progress` in `0..1` that upstream animates with
- * `updateTransition(...).animateFloat(fastEffectsSpec())`. Here [animateProgressTo] runs a
- * [ValueAnimator] over the same span, so the geometry and the timing match; what is lost is
- * upstream's *separate* slow animation of the colour channels against the fast one of the shape.
+ * All three are driven by a single `progress` in `0..1`. Upstream animates it with
+ * `updateTransition(...).animateFloat(PROGRESS_ANIMATION_SPEC)` where the spec is
+ * `tween(QUICK = 250, 0, STANDARD_IN)` (`material/ToggleControl.kt:632`, `material/Animation.kt:24,29`),
+ * and the radio's dot radius runs `QUICK` on select but `RAPID = 150` off it (`ToggleControl.kt:188`,
+ * `Animation.kt:23`) — so [animateProgressTo] takes the duration per call. What one progress cannot
+ * carry is upstream's *second* channel: the radio fades its dot alpha on its own 150 ms spec delayed
+ * 75 ms (`ToggleControl:189-190`, core `SelectionControls.kt:345-353`), and every one of these controls
+ * tweens its colours on `COLOR_ANIMATION_SPEC` (`:631`) beside the shape. Both jump here.
  */
 abstract class WearSelectionView(
     context: Context,
@@ -52,13 +60,16 @@ abstract class WearSelectionView(
     /** Called with the resolved colour already; alpha modulation is the subclass's job. */
     abstract fun drawControl(canvas: Canvas, density: Float, progress: Float)
 
-    fun animateProgressTo(target: Float) {
+    /** [durationMillis] defaults to v1's `QUICK`; the radio passes `RAPID` when deselecting. */
+    fun animateProgressTo(target: Float, durationMillis: Long = QuickMillis) {
         val t = target.coerceIn(0f, 1f)
         if (progress == t) return
         animator?.cancel()
         val from = progress
         animator = ValueAnimator.ofFloat(from, t).apply {
-            duration = FastEffectMillis
+            duration = durationMillis
+            // `STANDARD_IN = CubicBezierEasing(0.0f, 0.0f, 0.2f, 1.0f)`, `material/Animation.kt:29`.
+            interpolator = PathInterpolator(0f, 0f, 0.2f, 1f)
             addUpdateListener { progress = it.animatedValue as Float }
             start()
         }
@@ -83,8 +94,12 @@ abstract class WearSelectionView(
 
     protected fun dp(density: Float, value: Float): Float = value * density
 
-    private companion object {
-        const val FastEffectMillis = 200L
+    internal companion object {
+        /** `QUICK`, `material/Animation.kt:24` — v1's `PROGRESS_ANIMATION_SPEC` duration. */
+        const val QuickMillis = 250L
+
+        /** `RAPID`, `material/Animation.kt:23` — how long v1's dot takes to shrink. */
+        const val RapidMillis = 150L
     }
 }
 
@@ -205,30 +220,23 @@ class WearRadioView @JvmOverloads constructor(
 }
 
 /**
- * Switch: 32x22 dp track with a 2 dp border inset by 1 dp, and a thumb whose radius grows 6 to 9 dp
- * while its centre travels 11 to 21 dp. The tick inside the thumb is the unrotated M3 tick, scaled
- * about (12, 12) with the same cubic ease.
+ * Switch: v1's, not the row's — a 24 x 10 dp track drawn as one round-capped stroke down the middle of a
+ * 24 x 24 dp canvas, and a 7 dp thumb whose centre travels 7 to 17 dp with no tick and no growth.
+ * `SWITCH_TRACK_LENGTH 24` / `SWITCH_TRACK_HEIGHT 10` / `SWITCH_THUMB_RADIUS 7` / `WIDTH`-`HEIGHT 24`
+ * (`material/ToggleControl.kt:627-629`, `:634-635`), `drawTrack` (`materialcore/SelectionControls.kt:593-623`)
+ * and `drawThumb` (`material/ToggleControl.kt:398-416`).
+ *
+ * `material/ToggleControl.kt:123-134` hands v1's core the *same* colour for the track's fill and its
+ * stroke, and for the thumb and its icon, and the icon argument is discarded (`:137`, `_`), so this view
+ * has exactly two slots and draws neither a border ring nor a tick. [controlColor] is the track.
  */
 class WearSwitchView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0,
-) : WearSelectionView(context, attrs, defStyleAttr, 32f, 24f) {
+) : WearSelectionView(context, attrs, defStyleAttr, 24f, 24f) {
 
-    private val track = RectF()
-    private val thumbPath = Path()
-
-    var trackColor: Color = Color.Unspecified
-        set(value) {
-            field = value
-            invalidate()
-        }
-
-    var trackBorderColor: Color = Color.Unspecified
-        set(value) {
-            field = value
-            invalidate()
-        }
+    private val track = Path()
 
     var thumbColor: Color = Color.Unspecified
         set(value) {
@@ -236,79 +244,35 @@ class WearSwitchView @JvmOverloads constructor(
             invalidate()
         }
 
-    var tickColor: Color = Color.Unspecified
-        set(value) {
-            field = value
-            invalidate()
-        }
-
     override fun drawControl(canvas: Canvas, density: Float, progress: Float) {
-        val width = dp(density, 32f)
-        val height = dp(density, 22f)
+        val trackLength = dp(density, 24f)
+        val trackHeight = dp(density, 10f)
+        // Upstream's `center.y` is the draw scope's, i.e. half the measured height, not half the 24 dp of
+        // the design box — the two differ as soon as a parent measures the view taller.
         val centerY = height / 2f
-        val radius = height / 2f
+        val strokeRadius = trackHeight / 2f
 
-        paint.style = Paint.Style.FILL
-        paint.color = if (trackColor.isSpecified) trackColor.toArgb() else controlColor.toArgb()
-        track.set(0f, 0f, width, height)
-        canvas.drawRoundRect(track, radius, radius, paint)
-
-        val border = if (trackBorderColor.isSpecified) trackBorderColor else controlColor
-        if (border != trackColor) {
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = dp(density, 2f)
-            paint.color = border.toArgb()
-            track.set(dp(density, 1f), dp(density, 1f), width - dp(density, 1f), height - dp(density, 1f))
-            val inner = (height - dp(density, 2f)) / 2f
-            canvas.drawRoundRect(track, inner, inner, paint)
-        }
-
-        // Upstream evaluates the radius first, then lerps x with that radius already in the terms.
-        val thumbRadius = lerp(dp(density, 6f), dp(density, 9f), progress)
-        val thumbX = lerp(
-            thumbRadius + dp(density, 5f),
-            width - thumbRadius - dp(density, 2f),
-            progress,
-        )
-
-        paint.style = Paint.Style.FILL
-        paint.strokeWidth = 0f
-        paint.color = (if (thumbColor.isSpecified) thumbColor else controlColor).toArgb()
-        canvas.drawCircle(thumbX, centerY, thumbRadius, paint)
-
-        drawTick(canvas, density, progress, thumbX, centerY)
-    }
-
-    private fun drawTick(
-        canvas: Canvas,
-        density: Float,
-        progress: Float,
-        thumbX: Float,
-        thumbY: Float,
-    ) {
-        val scale = 1f - (1f - progress) * (1f - progress) * (1f - progress)
-        if (scale <= 0f) return
-        val color = if (tickColor.isSpecified) tickColor else controlColor
-        val pivotX = dp(density, 12f)
-        val pivotY = dp(density, 12f)
-
-        thumbPath.reset()
-        thumbPath.moveTo(dp(density, 7.4f), dp(density, 13.0f))
-        thumbPath.lineTo(dp(density, 9.9f), dp(density, 15.5f))
-        thumbPath.moveTo(dp(density, 10.5f), dp(density, 15.1f))
-        thumbPath.lineTo(dp(density, 16.5f), dp(density, 9.1f))
-
-        val save = canvas.save()
-        canvas.translate(thumbX - pivotX, thumbY - pivotY)
-        canvas.scale(scale, scale, pivotX, pivotY)
+        // Upstream strokes a line rather than filling a rect: the stadium is a round-capped stroke of the
+        // track's own height, from (trackHeight/2, centre) to (trackLength - trackHeight/2, centre).
+        track.reset()
+        track.moveTo(strokeRadius, centerY)
+        track.lineTo(trackLength - strokeRadius, centerY)
         paint.style = Paint.Style.STROKE
         paint.strokeCap = Paint.Cap.ROUND
-        paint.strokeWidth = dp(density, 2f)
-        paint.color = color.toArgb()
-        canvas.drawPath(thumbPath, paint)
-        canvas.restoreToCount(save)
-    }
+        paint.strokeWidth = trackHeight
+        paint.color = controlColor.toArgb()
+        canvas.drawPath(track, paint)
 
-    private fun lerp(from: Float, to: Float, fraction: Float): Float =
-        from + (to - from) * fraction
+        // `BlendMode.Src` (material/ToggleControl.kt:414) replaces the pixels under the thumb instead of
+        // compositing onto them, which is what keeps a 0.6-alpha unchecked thumb from picking up the
+        // track's alpha beneath it.
+        val thumbRadius = dp(density, 7f)
+        val thumbX = thumbRadius + (trackLength - 2f * thumbRadius) * progress
+        paint.style = Paint.Style.FILL
+        paint.strokeWidth = 0f
+        paint.color = thumbColor.toArgb()
+        paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC)
+        canvas.drawCircle(thumbX, centerY, thumbRadius, paint)
+        paint.xfermode = null
+    }
 }

@@ -70,20 +70,21 @@ fun Modifier.animatedText(spec: AnimatedTextSpec): Modifier =
  *    `LocalReduceMotion.current` and then picks the drawn fraction with
  *    `if (isReduceMotionEnabled) 1f else progressFraction()`, and that same `if` is what
  *    [derivedStateOf] evaluates here, so under reduce motion [progressFraction] is never called and
- *    the view is handed the end configuration (`view/WearAnimatedTextView.kt:112-125`).
+ *    the view is handed the end configuration — `WearAnimatedTextView.fraction`, which is pushed by
+ *    [bindState] and deliberately is not part of the re-tuned spec.
  *    The remaining deviation is *how the setting is known*: Hibari has no reduce-motion
  *    `TunationLocal` — this module's only source is [wearReduceMotionEnabled] in `ReduceMotion.kt`,
  *    a **live** `Settings.Global` read sampled once per tune, deliberately not cached and not
- *    observed (`ReduceMotion.kt:118-131`, with its header at `:64-72` explaining what it does not
- *    reproduce from upstream's `compositionLocalWithComputedDefaultOf`). So a wearer who flips the
+ *    observed (`ReduceMotion.kt`, whose "Not reproduced, deliberately" section spells out what it
+ *    does not take from upstream's `compositionLocalWithComputedDefaultOf`). So a wearer who flips the
  *    setting mid-animation sees the change on this node's *next* tune, not on the next frame;
  *    upstream's `ContentObserver` (`foundation/CompositionLocals.kt:44-52`) is what we cannot match.
  *    Upstream's second `updateText(text)` under reduce motion (`AnimatedText.kt:127-129`) has no
  *    counterpart and needs none: it is there because the Canvas lambda is the only thing that
  *    re-reads the string once nothing animates, whereas [text] here travels into
- *    [AnimatedTextSpec] on every tune and a changed value re-shapes the view
- *    (`view/WearAnimatedTextView.kt:74-79`). Our string cannot go stale, so there is nothing to
- *    refresh.
+ *    [AnimatedTextSpec] on every tune and a changed value re-shapes the view — the
+ *    `WearAnimatedTextView.text` setter early-returns only when the string is unchanged. Our string
+ *    cannot go stale, so there is nothing to refresh.
  *  - `semantics { text = AnnotatedString(text) }` (`AnimatedText.kt:123-125`) is not ported: a
  *    `TextView`-less custom `View` gets no accessibility text node here, the same gap every other
  *    drawn text view in this module has.
@@ -139,8 +140,8 @@ fun AnimatedText(
  * Upstream's `FontVariation.Settings` (`AnimatedText.kt:156-157`) is a Compose text type with no
  * Hibari analogue; the variation axes travel as a raw `fontVariationSettings` string instead — the
  * same currency this module already uses for tracking a weight axis
- * (`FontWeight.fontVariationSettings(widthAxis)`, applied in
- * [WearCurvedTextView.configurePaint]` style) — parsed by
+ * (`FontWeight.fontVariationSettings(widthAxis)`, applied in `WearCurvedTextView.configurePaint`
+ * style) — parsed by
  * [FontVariationAxis.fromFontVariationSettings] at [AnimatedTextFontRegistry] construction.
  *
  * @param style Defaults to null rather than `currentTextStyle()` because a `@Tunable` default

@@ -1,5 +1,6 @@
 package com.huanli233.hibari.wear
 
+import android.graphics.drawable.AnimatedVectorDrawable
 import android.os.Build
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -18,13 +19,14 @@ import com.huanli233.hibari.foundation.attributes.matchParentSize
 import com.huanli233.hibari.foundation.attributes.matchParentWidth
 import com.huanli233.hibari.foundation.attributes.padding
 import com.huanli233.hibari.foundation.attributes.size
-import com.huanli233.hibari.foundation.attributes.translationX
 import com.huanli233.hibari.runtime.Tunable
 import com.huanli233.hibari.runtime.TunationLocalProvider
+import com.huanli233.hibari.runtime.bindState
 import com.huanli233.hibari.runtime.currentContext
 import com.huanli233.hibari.runtime.currentTuner
 import com.huanli233.hibari.runtime.effects.DisposableEffect
 import com.huanli233.hibari.runtime.effects.LaunchedEffect
+import com.huanli233.hibari.runtime.locals.LocalLayoutDirection
 import com.huanli233.hibari.runtime.remember
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.geometry.CircleShape
@@ -33,10 +35,12 @@ import com.huanli233.hibari.ui.geometry.RoundedCornerShape
 import com.huanli233.hibari.ui.geometry.Shape
 import com.huanli233.hibari.ui.graphics.Color
 import com.huanli233.hibari.ui.graphics.takeOrElse
+import com.huanli233.hibari.ui.text.TextAlign
 import com.huanli233.hibari.ui.text.TextStyle
 import com.huanli233.hibari.ui.thenUnitViewAttribute
 import com.huanli233.hibari.ui.unit.Dp
 import com.huanli233.hibari.ui.unit.DpSize
+import com.huanli233.hibari.ui.unit.LayoutDirection
 import com.huanli233.hibari.ui.unit.dp
 import com.huanli233.hibari.ui.uniqueKey
 import com.huanli233.hibari.wear.attributes.container
@@ -63,10 +67,20 @@ import kotlinx.coroutines.launch
  *  - `LocalAccessibilityManager.calculateRecommendedTimeoutMillis`: [durationMillis] is used
  *    verbatim instead of being stretched for the content shown. That stretch lives in Compose's
  *    platform a11y layer, which has no Hibari counterpart yet.
- *  - The animated-vector defaults `ConfirmationDialogDefaults.SuccessIcon`,
- *    `ConnectionFailureIcon`, `GenericFailureIcon` and the deprecated `FailureIcon` alias: they load
- *    `R.drawable.wear_m3c_*` from the AndroidX resource package, this module ships no resources, and
- *    no drawable id may be invented. Their `content` slots therefore have no default.
+ *  - The animated-vector defaults are ported as [ConfirmationDialogDefaults.SuccessIcon],
+ *    [ConfirmationDialogDefaults.ConnectionFailureIcon], [ConfirmationDialogDefaults.GenericFailureIcon]
+ *    and the deprecated [ConfirmationDialogDefaults.FailureIcon] alias, and the four success / failure
+ *    entry points carry upstream's parameter defaults verbatim (`material3/ConfirmationDialog.kt:364`,
+ *    `:421`, `:489`, `:552`), so an omitted `content` draws the artwork. Only the play differs: upstream loads
+ *    `AnimatedImageVector.animatedVectorResource` + `rememberAnimatedVectorPainter` and flips an `atEnd`
+ *    boolean after `IconDelay` = `DurationShort2` = 100 ms (`:616`, `:626`, `:620-623`, `:815`), neither
+ *    class being in this module's dependency set. The same three XML bytes are therefore loaded as a
+ *    platform `AnimatedVectorDrawable` and driven by drawable level, the route `OpenOnPhoneDialog.kt`
+ *    established; the consequences (the play is owned by the drawable rather than by the composition, so
+ *    a re-tune neither restarts nor stops it, and upstream's `AnimatedVectorPainter` is not in the
+ *    reference tree so nothing about its `atEnd` handling beyond the flip can be read) are written at the
+ *    members themselves. `GenericFailureIcon` has no play to lose — upstream draws it as a static
+ *    `ImageVector` (`:679`, `:681`).
  *  - `LocalReduceMotion` is sampled through [wearReduceMotionEnabled], which reads `Settings.Global`
  *    live rather than caching it and refreshing from a `ContentObserver` the way upstream's local does
  *    (`foundation/CompositionLocals.kt:44-52`, `:103`). Each use below mirrors upstream's own shape:
@@ -271,11 +285,25 @@ fun ConfirmationDialogContent(
             }
             if (textSlot != null) {
                 Spacer(Modifier.height(LinearContentSpacing))
-                provideDialogText(resolved.textColor, MaterialTheme.typography.titleMedium) {
+                // Upstream's linear-content scope is `LocalContentColor` + `LocalTextStyle` +
+                // `LocalTextConfiguration(Center, Ellipsis, LinearContentMaxLines)`
+                // (`material3/ConfirmationDialog.kt:295-304`), i.e. [provideContentColorAndStyle]'s
+                // three-local form; upstream's curved-content sibling provides the colour alone (`:928`).
+                provideContentColorAndStyle(
+                    resolved.textColor,
+                    MaterialTheme.typography.titleMedium,
+                    TextConfiguration(
+                        TextAlign.Center,
+                        TextOverflow.Ellipsis,
+                        maxLines = ConfirmationDialogDefaults.LinearContentMaxLines,
+                    ),
+                ) {
                     Column(
                         modifier = Modifier
                             .matchParentWidth()
-                            .alpha(opacity.value)
+                            // Reading `opacity.value` here would re-tune the whole dialog once per frame
+                            // of the text fade; alpha is a plain view property, so bind the state.
+                            .bindState(uniqueKey, opacity.asState()) { this.alpha = it }
                             .dialogChildGravity(Gravity.CENTER_HORIZONTAL),
                         content = { textSlot.invoke(this) },
                     )
@@ -286,7 +314,12 @@ fun ConfirmationDialogContent(
     }
 }
 
-/** Success confirmation dialog: a green-flagged transient message, haptic on entry. */
+/**
+ * Success confirmation dialog: a green-flagged transient message, haptic on entry.
+ *
+ * @param content upstream's default is `{ ConfirmationDialogDefaults.SuccessIcon() }`
+ *   (`material3/ConfirmationDialog.kt:364`), written here as the parameter default it is upstream.
+ */
 @Tunable
 fun SuccessConfirmationDialog(
     onDismissRequest: () -> Unit,
@@ -294,10 +327,9 @@ fun SuccessConfirmationDialog(
     modifier: Modifier = Modifier,
     colors: ConfirmationDialogColors? = null,
     durationMillis: Long = ConfirmationDialogDefaults.DurationMillis,
-    content: (@Tunable () -> Unit)? = null,
+    content: @Tunable () -> Unit = { ConfirmationDialogDefaults.SuccessIcon() },
 ) {
     val resolved = colors ?: ConfirmationDialogDefaults.successColors()
-    val iconSlot = content
     dialogAutoDismiss(onDismissRequest, durationMillis)
     SuccessConfirmationDialogContent(
         curvedText = curvedText,
@@ -306,17 +338,21 @@ fun SuccessConfirmationDialog(
         // point and a direct [SuccessConfirmationDialogContent] call stays silent as upstream's does.
         modifier = modifier.dialogHaptics(confirm = true),
         colors = resolved,
-        content = iconSlot,
+        content = content,
     )
 }
 
-/** Content of [SuccessConfirmationDialog]: no dismiss timer and, as upstream, no haptic. */
+/**
+ * Content of [SuccessConfirmationDialog]: no dismiss timer and, as upstream, no haptic.
+ *
+ * @param content the same upstream default as on [SuccessConfirmationDialog] (`:421`).
+ */
 @Tunable
 fun SuccessConfirmationDialogContent(
     curvedText: (CurvedLayoutScope.() -> Unit)?,
     modifier: Modifier = Modifier,
     colors: ConfirmationDialogColors? = null,
-    content: (@Tunable () -> Unit)? = null,
+    content: @Tunable () -> Unit = { ConfirmationDialogDefaults.SuccessIcon() },
 ) {
     val resolved = colors ?: ConfirmationDialogDefaults.successColors()
     val context = currentContext
@@ -355,18 +391,21 @@ fun SuccessConfirmationDialogContent(
                             ),
                         ),
                 ) { }
-                if (iconSlot != null) {
-                    val slot = iconSlot
-                    Box(modifier = Modifier.gravity(Gravity.CENTER)) {
-                        provideDialogIconColor(resolved.iconColor) { slot() }
-                    }
+                Box(modifier = Modifier.gravity(Gravity.CENTER)) {
+                    provideDialogIconColor(resolved.iconColor) { iconSlot() }
                 }
             }
         },
     )
 }
 
-/** Failure confirmation dialog: a failure-flagged transient message, haptic on entry. */
+/**
+ * Failure confirmation dialog: a failure-flagged transient message, haptic on entry.
+ *
+ * @param content upstream's default is `{ ConfirmationDialogDefaults.ConnectionFailureIcon() }`
+ *   (`material3/ConfirmationDialog.kt:489`); [GenericFailureIcon] is the alternative upstream's own
+ *   `:477-478` recommends for a generic error.
+ */
 @Tunable
 fun FailureConfirmationDialog(
     onDismissRequest: () -> Unit,
@@ -374,27 +413,30 @@ fun FailureConfirmationDialog(
     modifier: Modifier = Modifier,
     colors: ConfirmationDialogColors? = null,
     durationMillis: Long = ConfirmationDialogDefaults.DurationMillis,
-    content: (@Tunable () -> Unit)? = null,
+    content: @Tunable () -> Unit = { ConfirmationDialogDefaults.ConnectionFailureIcon() },
 ) {
     val resolved = colors ?: ConfirmationDialogDefaults.failureColors()
-    val iconSlot = content
     dialogAutoDismiss(onDismissRequest, durationMillis)
     FailureConfirmationDialogContent(
         curvedText = curvedText,
         // `performHapticFeedback = { hapticFeedback.performHapticFeedback(Reject) }`, on the wrapper.
         modifier = modifier.dialogHaptics(confirm = false),
         colors = resolved,
-        content = iconSlot,
+        content = content,
     )
 }
 
-/** Content of [FailureConfirmationDialog]: the plate morphs circle→extraLarge and the icon shakes. */
+/**
+ * Content of [FailureConfirmationDialog]: the plate morphs circle→extraLarge and the icon shakes.
+ *
+ * @param content the same upstream default as on [FailureConfirmationDialog] (`:552`).
+ */
 @Tunable
 fun FailureConfirmationDialogContent(
     curvedText: (CurvedLayoutScope.() -> Unit)?,
     modifier: Modifier = Modifier,
     colors: ConfirmationDialogColors? = null,
-    content: (@Tunable () -> Unit)? = null,
+    content: @Tunable () -> Unit = { ConfirmationDialogDefaults.ConnectionFailureIcon() },
 ) {
     val resolved = colors ?: ConfirmationDialogDefaults.failureColors()
     val context = currentContext
@@ -413,7 +455,9 @@ fun FailureConfirmationDialogContent(
                 shake.animateTo(FailureContentTransitionEnd, FailureContentSecondSpec)
             }
             // `failureIconContainer`: the plate morphs on `fastEffectsSpec` and does not rotate,
-            // while `IconContainer` itself carries the two-stage `translationX` shake.
+            // while `IconContainer` itself carries the two-stage `translationX` shake. The shake is
+            // bound rather than read: it lands on `View.translationX`, and `shake.value` in this body
+            // would retune the whole dialog once per frame of the spring.
             confirmationDialogIconContainer(
                 size = size,
                 targetShape = MaterialTheme.shapes.extraLarge,
@@ -421,7 +465,9 @@ fun FailureConfirmationDialogContent(
                 rotateFrom = null,
                 iconColor = resolved.iconColor,
                 containerColor = resolved.iconContainerColor,
-                shakeXPx = shake.value,
+                shakeModifier = Modifier.bindState(uniqueKey, shake.asState()) {
+                    this.translationX = it
+                },
                 content = iconSlot,
             )
         },
@@ -434,9 +480,12 @@ fun FailureConfirmationDialogContent(
  * edge — filled inside the [CurvedLayout] that [ConfirmationDialog] builds around its `curvedText`
  * slot.
  *
- * [style] is required, as upstream: `ConfirmationDialogDefaults.curvedTextStyle` reads the theme, so it
- * has to be resolved by the caller's slot lambda, which is a tunable context, rather than defaulted
- * from this plain scope member.
+ * [style] is required, exactly as upstream has it (`material3/ConfirmationDialog.kt:592` — a plain
+ * `public fun`, not `@Composable`, so it cannot default from `curvedTextStyle`, which upstream only
+ * recommends at `:593-594` and which reads the theme: [ConfirmationDialogDefaults.curvedTextStyle]
+ * here, a `@Composable get()` there at `:604-605`). The slot it is called from is plain in both trees —
+ * [CurvedLayout]'s `content` is a `CurvedLayoutScope.() -> Unit` (`CurvedLayout.kt:96`) — so the caller
+ * resolves the style and hands it in.
  */
 fun CurvedLayoutScope.confirmationDialogCurvedText(
     text: String,
@@ -461,9 +510,10 @@ object ConfirmationDialogDefaults {
     val SmallIconSize: Dp = 36.dp
 
     /**
-     * `LinearContentMaxLines`: the linear text should not exceed 3 lines. Upstream enforces it, plus
-     * centred alignment and ellipsis, through `LocalTextConfiguration`; hibari-wear has no
-     * text-configuration local that [Text] reads, so the number is only carried here for the caller.
+     * `LinearContentMaxLines`: the linear text should not exceed 3 lines (`material3/ConfirmationDialog.kt:1058`).
+     * [ConfirmationDialogContent] hands it to [Text] through [LocalTextConfiguration], together with
+     * centred alignment and ellipsis, so a caller's bare [Text] in the `text` slot is budgeted by the
+     * dialog.
      */
     const val LinearContentMaxLines = 3
 
@@ -473,6 +523,117 @@ object ConfirmationDialogDefaults {
     /** The default style for curved text content: `MaterialTheme.typography.arcLarge`. */
     @Tunable
     fun curvedTextStyle(): TextStyle = MaterialTheme.typography.arcLarge
+
+    /**
+     * `ConfirmationDialogDefaults.SuccessIcon` (`material3/ConfirmationDialog.kt:613-631`): the check
+     * mark at [IconSize], drawn with the plate's ambient content colour and played once after
+     * `IconDelay` — upstream's `animatedDelay(IconDelay, reduceMotionEnabled)` then `atEnd = true`
+     * (`:620-623`), where `IconDelay = MotionTokens.DurationShort2.toLong()` = 100 ms (`:815`,
+     * `tokens/MotionTokens.kt:43`).
+     *
+     * Upstream loads the artwork as an `AnimatedImageVector` and hands it to
+     * `rememberAnimatedVectorPainter` (`:616`, `:626`). Neither class exists in this module's dependency
+     * set, so the same XML bytes are loaded as a platform `AnimatedVectorDrawable` and driven the way
+     * `OpenOnPhoneDialog.kt:399-426` drives its artwork: `start()` on the drawable's own clock, then
+     * `setLevel(ConfirmationIconLevelEnd)` — the javap read of the `android-37.1` stub this session shows
+     * `AnimatedVectorDrawable` overriding `onLevelChange(int)` while exposing no public seek-to-end. What
+     * that costs: the play belongs to the drawable rather than to the composition, so a re-tune of this
+     * member does not restart it and the dialog leaving the tree does not stop it; and
+     * `androidx.compose.ui.graphics.vector.AnimatedVectorPainter` is not in the reference tree, so nothing
+     * about upstream's `atEnd` beyond the flip itself can be read here. The XML parks the check path at
+     * `trimPathEnd="0"` and animates it to `1` over 267 ms, so the animated path lands on the completed
+     * mark from its own keyframes, and the reduce-motion branch — level set, never started — is the
+     * module's standing reading of "no motion, end frame".
+     *
+     * No tint is applied from here: upstream's `Icon` tints off `LocalContentColor`, and [FixedSizeIcon]
+     * resolves that same ambient, which both dialog plates hand down through [provideDialogIconColor].
+     */
+    @Tunable
+    fun SuccessIcon(modifier: Modifier = Modifier) {
+        val context = currentContext
+        val reduceMotion = wearReduceMotionEnabled(context)
+        val drawable = remember(context) {
+            context.getDrawable(R.drawable.wear_m3c_check_animation) as? AnimatedVectorDrawable
+        }
+        LaunchedEffect(drawable, reduceMotion) {
+            val icon = drawable ?: return@LaunchedEffect
+            if (!reduceMotion) icon.start()
+            wearAnimatedDelay(MotionDurationTokens.DurationShort2.toLong(), reduceMotion)
+            icon.setLevel(ConfirmationIconLevelEnd)
+        }
+        // Upstream pins `LayoutDirection.Ltr` for this icon alone (`:624`), carried verbatim; the
+        // direction-sensitive part is the artwork's, not this file's.
+        TunationLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            FixedSizeIcon(
+                image = drawable,
+                contentDescription = null,
+                iconSize = IconSize,
+                modifier = modifier,
+            )
+        }
+    }
+
+    /**
+     * `ConfirmationDialogDefaults.ConnectionFailureIcon` (`material3/ConfirmationDialog.kt:639-655`): the
+     * broken-phone-pair artwork at [IconSize], on the same load-and-scrub route (and with the same two
+     * costs) as [SuccessIcon]; upstream's `IconDelay`/`atEnd` trigger here is `:646-649`. Its XML drives
+     * five targets through `trimPathEnd` keyframes, so the finished drawing is what the play lands on.
+     *
+     * Upstream does not wrap this one in `LocalLayoutDirection` (`:650`), and neither does this file.
+     */
+    @Tunable
+    fun ConnectionFailureIcon(modifier: Modifier = Modifier) {
+        val context = currentContext
+        val reduceMotion = wearReduceMotionEnabled(context)
+        val drawable = remember(context) {
+            context.getDrawable(R.drawable.wear_m3c_failure_animation) as? AnimatedVectorDrawable
+        }
+        LaunchedEffect(drawable, reduceMotion) {
+            val icon = drawable ?: return@LaunchedEffect
+            if (!reduceMotion) icon.start()
+            wearAnimatedDelay(MotionDurationTokens.DurationShort2.toLong(), reduceMotion)
+            icon.setLevel(ConfirmationIconLevelEnd)
+        }
+        FixedSizeIcon(
+            image = drawable,
+            contentDescription = null,
+            iconSize = IconSize,
+            modifier = modifier,
+        )
+    }
+
+    /**
+     * The deprecated alias of [ConnectionFailureIcon] (`material3/ConfirmationDialog.kt:663-670`), kept
+     * with upstream's message and replacement so a caller migrating from Wear Compose 1.5 sees the same
+     * warning they would there.
+     */
+    @Deprecated(
+        "This composable is provided for backwards compatibility with Compose for Wear OS 1.5. " +
+            "It has been renamed to clarify the meaning of the icon. Use ConnectionFailureIcon instead.",
+        replaceWith = ReplaceWith("ConnectionFailureIcon"),
+        level = DeprecationLevel.WARNING,
+    )
+    @Tunable
+    fun FailureIcon(modifier: Modifier = Modifier): Unit = ConnectionFailureIcon(modifier)
+
+    /**
+     * `ConfirmationDialogDefaults.GenericFailureIcon` (`material3/ConfirmationDialog.kt:677-685`): the
+     * plain error glyph at [IconSize]. Upstream loads it as an `ImageVector` with
+     * `rememberVectorPainter` (`:679`, `:681`) — a *static* vector, with no `atEnd` and no delay, unlike
+     * the two animated defaults above — so this port loads `wear_m3c_error.xml` (a `<vector>` root) and
+     * draws it; nothing is played and nothing is scrubbed.
+     */
+    @Tunable
+    fun GenericFailureIcon(modifier: Modifier = Modifier) {
+        val context = currentContext
+        val drawable = remember(context) { context.getDrawable(R.drawable.wear_m3c_error) }
+        FixedSizeIcon(
+            image = drawable,
+            contentDescription = null,
+            iconSize = IconSize,
+            modifier = modifier,
+        )
+    }
 
     /** `ConfirmationDialogDefaults.colors()`: primary icon on an on-primary plate. */
     @Tunable
@@ -541,10 +702,6 @@ object ConfirmationDialogDefaults {
             textColor = ColorSchemeKeyTokens.OnBackground.resolve(scheme),
         )
     }
-
-    // Upstream's animated-vector icon defaults — `SuccessIcon`, `ConnectionFailureIcon`,
-    // `GenericFailureIcon` and the deprecated `FailureIcon` — are not here: they need drawables this
-    // module does not ship, and `IconDelay` they wait for is `DurationShort2`, used above.
 }
 
 /* ------------------------------------------------------------------ *
@@ -611,6 +768,9 @@ private fun confirmationDialogContentWrapper(
             provideDialogText(colors.textColor, null) {
                 // `ConfirmationDialogContentWrapper`'s CurvedLayout: anchor 90f is 6 o'clock, and the
                 // label is filled into it by the caller, so the alpha fades the layout itself.
+                // Not a `bindState` like the linear text above: a measure-policy host gets no
+                // attributes applied at creation (`Renderer.kt:99-104`), and a binding's value never
+                // changes, so the subscription would install on no frame at all.
                 CurvedLayout(
                     modifier = Modifier.alpha(opacity.value),
                     anchor = 90f,
@@ -626,7 +786,8 @@ private fun confirmationDialogContentWrapper(
  * `IconContainer` + `iconContainer` / `failureIconContainer`: a shaped plate behind the icon whose
  * corners open from a circle into [targetShape] on [morphSpec], optionally settling from
  * [rotateFrom] degrees on `slowEffectsSpec` (the failure plate does not rotate), and shaken
- * horizontally by [shakeXPx] (`FailureContentTransition`).
+ * horizontally by [shakeModifier] (`FailureContentTransition`, bound by the caller so the shake
+ * retunes nothing).
  *
  * A `BoxScope` extension because the plate positions itself with `BoxScope.gravity`, the stand-in for
  * upstream's `Modifier.align(Alignment.Center)` inside a `BoxScope.IconContainer`.
@@ -639,7 +800,7 @@ private fun BoxScope.confirmationDialogIconContainer(
     rotateFrom: Float? = ConfirmationIconInitialAngle,
     iconColor: Color,
     containerColor: Color,
-    shakeXPx: Float = 0f,
+    shakeModifier: Modifier = Modifier,
     content: (@Tunable () -> Unit)?,
 ) {
     val slot = content
@@ -657,7 +818,7 @@ private fun BoxScope.confirmationDialogIconContainer(
     Box(
         modifier = Modifier
             .gravity(Gravity.CENTER)
-            .translationX(shakeXPx),
+            .then(shakeModifier),
     ) {
         // Each child carries its own gravity: a FrameLayout host has no group alignment, so
         // upstream's `contentAlignment = Center` becomes one `BoxScope.gravity` per child.
@@ -667,7 +828,9 @@ private fun BoxScope.confirmationDialogIconContainer(
             modifier = Modifier
                 .gravity(Gravity.CENTER)
                 .size(DpSize(size, size))
-                .dialogRotation(rotation.value)
+                // `rotation.value` read here would retune the dialog every frame of the settle;
+                // `dialogRotation` only ever wrote this same view property, so bind the state instead.
+                .bindState(uniqueKey, rotation.asState()) { this.rotation = it }
                 .container(
                     ContainerSpec(
                         shape = morphedDialogShape(targetShape, size) { morph.value },
@@ -793,3 +956,11 @@ private val FailureContentFirstSpec: AnimationSpec<Float> =
     spring(dampingRatio = ExpressiveDefaultDamping, stiffness = ExpressiveDefaultStiffness)
 private val FailureContentSecondSpec: AnimationSpec<Float> =
     spring(dampingRatio = 0.5f, stiffness = ExpressiveDefaultStiffness)
+
+/**
+ * `Drawable.MAX_LEVEL`, the value [ConfirmationDialogDefaults.SuccessIcon] and
+ * [ConfirmationDialogDefaults.ConnectionFailureIcon] scrub their `AnimatedVectorDrawable` to. Spelled as
+ * a literal because the `android-37.1` stub this module compiles against carries no `MAX_LEVEL` constant
+ * to name (javap this session), for the same reason as `OpenOnPhoneIconLevelEnd` in `OpenOnPhoneDialog.kt`.
+ */
+private const val ConfirmationIconLevelEnd = 10000

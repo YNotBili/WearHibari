@@ -26,12 +26,14 @@ import com.huanli233.hibari.animation.FiniteAnimationSpec
 import com.huanli233.hibari.animation.SpringSpec
 import com.huanli233.hibari.animation.TwoWayConverter
 import com.huanli233.hibari.animation.VectorizedFiniteAnimationSpec
+import com.huanli233.hibari.runtime.withFrameMillis
 import java.util.concurrent.TimeUnit
 
 /**
  * Ported from `androidx.wear.compose.material3.AnimationSpecUtils`
- * (`material3/AnimationSpecUtils.kt:49-123`, `:125-192`), the `FiniteAnimationSpec` speed/delay
- * combinators the wear components hang their motion on.
+ * (`material3/AnimationSpecUtils.kt:49-123`, `:125-192`, `:194-201` and `:265`), the `FiniteAnimationSpec`
+ * speed/delay combinators the wear components hang their motion on, plus [waitUntil], the frame-clocked
+ * bounded wait upstream's press animations sit on.
  *
  * `hibari-animation` is itself a port of `androidx.compose.animation.core`, so every type these
  * extensions touch — [FiniteAnimationSpec], [SpringSpec], [VectorizedFiniteAnimationSpec],
@@ -43,7 +45,8 @@ import java.util.concurrent.TimeUnit
  * exhaustive without an `else`. Nothing was invented and no number was substituted.
  *
  * Visibility follows upstream: all four combinators are `internal` there (`:55`, `:71`, `:84`, `:118`)
- * and every consumer in this module — `MotionScheme.kt`, `view/WearButtonGroupView.kt`,
+ * and so is [waitUntil] (`:194`), while `MAX_WAIT_TIME_MILLIS` is `private` there (`:265`) and stays
+ * `private` here. Every consumer in this module — `MotionScheme.kt`, `view/WearButtonGroupView.kt`,
  * `ContainerDrawable.kt`, `IconButton.kt`, `Stepper.kt`, `ButtonGroup.kt`, `AlertDialog.kt`,
  * `TimePicker.kt`, `ConfirmationDialog.kt` — lives in the same compilation unit, so `internal` is
  * enough and no wider surface is published than upstream has.
@@ -51,7 +54,8 @@ import java.util.concurrent.TimeUnit
  * The `factor` arithmetic is upstream's, to the operation: [speedFactor] squares the factor onto the
  * spring's **stiffness only** (`:60`), leaving `dampingRatio` and `visibilityThreshold` alone, which is
  * why a `faster(100f)` (factor 2) is four times the stiffness rather than twice — `1400f -> 5600f` for
- * a `StiffnessMediumLow` press, as `view/WearButtonGroupView.kt:404-421` currently computes by hand.
+ * a `StiffnessMediumLow` press, as `view/WearButtonGroupView.kt` currently computes by hand in its
+ * `ButtonGroupDownStiffness`.
  * Every other spec type is wrapped rather than rebuilt (`:61`), so a `TweenSpec`'s duration is
  * stretched by `1 / factor` and its easing curve is preserved, at the vectorised level.
  *
@@ -65,30 +69,56 @@ import java.util.concurrent.TimeUnit
  *    `@Suppress("MethodNameUnits")` (`:176`) for a Compose-internal lint id that has no meaning in this
  *    project, so the suppression is dropped and the method kept.
  *
- * Not ported — the rest of `AnimationSpecUtils.kt`, none of it spec arithmetic, and all of it blocked
- * on a substrate this module does not have. The one exception is `animatedDelay`, which is ported but
- * lives elsewhere; see the bullet below it:
- *  - `animateEnabledStateColor` (`:93-111`): it returns `animateColorAsState(...)`, and
- *    `hibari-animation` exports no `animateColorAsState` (grep over the whole package: zero hits) and no
- *    `Color` vector converter. This module resolves the enabled/disabled pair a different way — the
- *    variants ride inside [ContainerSpec] and [ContainerDrawable] swaps them on drawable state, as that
- *    file's own header records — so there is nothing to port the state host onto.
- *  - `waitUntil` (`:194-201`) and `MAX_WAIT_TIME_MILLIS` (`:265`): `withFrameMillis` does not exist in
- *    `hibari-animation` either (zero hits). `ConfirmationDialog.kt` already waits on the frame clock it
- *    does have (`AnimationSpec.kt`'s `animate`, which runs on Hibari's monotonic frame clock), so the
- *    helper has no consumer here.
+ * Not ported into *this file* — the rest of `AnimationSpecUtils.kt` is not spec arithmetic, and it
+ * splits four ways: `waitUntil` is ported below, `animatedDelay` is ported but lives elsewhere, and the
+ * two bullets below are each "not built here" for a reason stated in place — neither is a missing
+ * engine, and neither should be read as a blocker:
+ *  - `animateEnabledStateColor` (`:93-111`): a `@Composable` whose whole body is
+ *    `animateColorAsState(...)`, and that function is declared nowhere in this repo (searched every
+ *    module: zero hits). The old note excused it as "no substrate", which is wrong: `Animatable<T, V>`
+ *    is public (`hibari-animation/.../Animatable.kt:31`), `animateFloatAsState` shows the `@Tunable`
+ *    shape such a wrapper takes (`AnimateAsState.kt:61`), and `TwoWayConverter` with its factory are
+ *    public (`VectorConverters.kt:20`, `:42`). The one leg that really is absent is the colour one —
+ *    `VectorConverters.kt:57-98` declares nine `VectorConverter`s, for `Float`, `Int`, `Rect`, `Dp`,
+ *    `DpOffset`, `Size`, `Offset`, `IntOffset` and `IntSize`, and none for `Color` — as is a host that
+ *    retunes per animated value. So an equivalent here is a converter plus a small host, i.e. an
+ *    addition, not the port of something missing. It stays unwritten because nothing needs it: the
+ *    enabled/disabled and resting/pressed pairs ride inside [ContainerSpec], and [ContainerDrawable]
+ *    swaps them on the view's drawable state, so the colour animates inside the draw rather than as an
+ *    animated `Color` value — the route `IconButton.kt`, `TextButton.kt`, `Slider.kt` and
+ *    `SwitchButton.kt` each record in their own headers.
+ *  - `waitUntil` (`:194-201`) and `MAX_WAIT_TIME_MILLIS` (`:265`) **are** ported, at the bottom of this
+ *    file. The claim this bullet used to make — that `withFrameMillis` does not exist — was false: it
+ *    lives in `hibari-runtime`'s `MonotonicFrameClock.kt`, both as the `MonotonicFrameClock` member and
+ *    as the context-resolving top-level used here, and `view/WearButtonGroupView.kt` was already
+ *    polling the frame clock with a private copy of this helper that now folds into this one. Of
+ *    upstream's three consumers, only `ButtonGroup.kt:466` has a call site here:
+ *    `rememberAnimatedPressedButtonShape` (`material3/RoundButton.kt:114`) and
+ *    `rememberAnimatedToggleRoundedCornerShape` (`material3/AnimatedToggleRoundedCornerShape.kt:130`)
+ *    both wait on an `Animatable` press progress this module does not keep — their morph is
+ *    interpolated by [ContainerDrawable] off `state_pressed` (see [ContainerSpec]) and the checked half
+ *    is answered in composition — so there is no coroutine to park and no floor to wait for. Giving
+ *    them a caller would be a second mechanism, not a port.
  *  - `animatedDelay` (`:203-208`) is **ported, but not into this file**: it is a delay policy rather
  *    than spec arithmetic, and its condition is upstream's `LocalReduceMotion`
  *    (`foundation/CompositionLocals.kt:39-55`), which has nothing to do with animation specs. It lives
  *    next to that read now, as `wearAnimatedDelay` in `ReduceMotion.kt`. Upstream's own call sites pair
  *    the two (`material3/ConfirmationDialog.kt:273` with `:278`,
  *    `material3/OpenOnPhoneDialog.kt:200` with `:204`), and the consumers here now pair them the same
- *    way (`ConfirmationDialog.kt:238` with `:244`, `OpenOnPhoneDialog.kt:155` with `:173`); the
- *    earlier branchless local copy, `dialogAnimatedDelay`, is gone.
- *  - `FadeLabel` (`:210-263`): needs `Text`, `Animatable`, `LaunchedEffect` *and*
- *    `LocalTextConfiguration` (recorded absent in `WEAR_PORT_CONTRACT.md`), i.e. a composable text
- *    cross-fade host, which is a component rather than a spec utility. `AnimatedText` is the file that
- *    owns this shape here.
+ *    way — `ConfirmationDialogContent`, `SuccessConfirmationDialogContent`,
+ *    `FailureConfirmationDialogContent`, `confirmationDialogContentWrapper` and
+ *    `confirmationDialogIconContainer`, plus `OpenOnPhoneDialogContent`; the earlier branchless local
+ *    copy, `dialogAnimatedDelay`, is gone.
+ *  - `FadeLabel` (`:210-263`) is missing because nobody has written it, not because it cannot be
+ *    written: the two blockers this bullet used to name are both false. [LocalTextConfiguration] landed
+ *    (`TextConfiguration.kt:23`), and the `animationSpec.faster(200f)` at `:238` is this file's own
+ *    [faster] (`:71-76`). Its remaining parts are all here too — [Text], `Animatable`, `LaunchedEffect`,
+ *    `snapTo` (`Animatable.kt:359`) — so the whole of it is a component-shaped port, not a spec utility:
+ *    upstream's `graphicsLayer { alpha = abs(animatedAlpha.value) }` (`:251`) has no Hibari counterpart
+ *    and would land as `Modifier.alpha` on the label host, which is a per-frame retune unless the
+ *    animatable is passed through `bindState`. Its two would-be consumers are already here and already
+ *    documented: `TimePicker.kt:320` and `DatePicker.kt:382` each swap the heading text at once, with
+ *    upstream's fade dropped.
  *
  * @see MotionScheme
  */
@@ -244,3 +274,31 @@ private operator fun <T : AnimationVector> T.times(k: Float): T {
     }
         as T
 }
+
+/**
+ * Suspends until [condition] holds, sampling it once per frame, and gives up after
+ * [MAX_WAIT_TIME_MILLIS].
+ *
+ * Ported from `material3/AnimationSpecUtils.kt:194-201`, verbatim including the trailing `return`,
+ * which is a no-op in a `Unit` function but is what upstream writes. The bail-out is not decoration:
+ * the one Hibari call site (`view/WearButtonGroupView.kt`, upstream's `ButtonGroup.kt:466`) waits on a
+ * grow that the release has already cancelled, so without it a tap shorter than the grow would leave
+ * the coroutine parked for good. Upstream's other two consumers guard the same wait with
+ * `!progress.isRunning`, which this helper deliberately does not add — the condition is the caller's.
+ *
+ * [com.huanli233.hibari.runtime.withFrameMillis] takes the clock off the calling coroutine context and
+ * falls back to the Choreographer-backed
+ * [com.huanli233.hibari.runtime.DefaultMonotonicFrameClock], so the loop is driven by real frames
+ * wherever it runs; the animation scopes that reach this do not install a clock of their own.
+ */
+internal suspend fun waitUntil(condition: () -> Boolean) {
+    val initialTimeMillis = withFrameMillis { it }
+    while (!condition()) {
+        val timeMillis = withFrameMillis { it }
+        if (timeMillis - initialTimeMillis > MAX_WAIT_TIME_MILLIS) return
+    }
+    return
+}
+
+/** `material3/AnimationSpecUtils.kt:265`, the cap [waitUntil] waits for. */
+private const val MAX_WAIT_TIME_MILLIS = 1_000L

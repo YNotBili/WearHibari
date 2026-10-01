@@ -9,20 +9,27 @@ import com.huanli233.hibari.wear.view.WearCircularProgressView
 import com.huanli233.hibari.wear.view.WearLinearProgressView
 
 /**
- * Push a [ProgressSpec] onto either progress view. The common four properties are set through the
- * shared [applyCommon]; the arc-only ones need the circular view, so they go through a type test
- * rather than a wider interface that [WearLinearProgressView] would have to stub out.
+ * Push a [ProgressSpec] onto either progress view. The three colours are resolved once through
+ * [com.huanli233.hibari.wear.ProgressIndicatorColors.indicatorColorFor] and its siblings, which are
+ * upstream's `indicatorBrush(enabled)` / `trackBrush(enabled)` / `overflowTrackBrush(enabled)` calls
+ * (`ProgressIndicator.kt:231-261`) moved out of the draw routine; the gap, the arc angles and the
+ * overflow flag only exist on the circular view and the X mirror only on the linear one, so they go
+ * through a type test rather than a wider interface that [WearLinearProgressView] would have to stub
+ * out.
  */
 fun Modifier.progressIndicatorAttrs(spec: ProgressSpec): Modifier =
     this.thenViewAttribute<View, ProgressSpec>(uniqueKey, spec) {
-        val indicator = if (it.enabled) it.colors.indicatorColor else it.colors.disabledIndicatorColor
-        val track = if (it.enabled) it.colors.trackColor else it.colors.disabledTrackColor
+        val indicator = it.colors.indicatorColorFor(it.enabled)
+        val track = it.colors.trackColorFor(it.enabled)
         when (this) {
             is WearCircularProgressView -> {
                 progress = it.progress
                 indicatorColor = indicator
                 trackColor = track
+                overflowTrackColor = it.colors.overflowTrackColorFor(it.enabled)
+                allowProgressOverflow = it.allowProgressOverflow
                 strokeWidth = it.strokeWidth
+                gapSize = it.gapSize
                 startAngle = it.startAngle
                 endAngle = it.endAngle
                 indeterminate = it.indeterminate
@@ -33,6 +40,7 @@ fun Modifier.progressIndicatorAttrs(spec: ProgressSpec): Modifier =
                 indicatorColor = indicator
                 trackColor = track
                 strokeWidth = it.strokeWidth
+                flipHorizontal = it.flipHorizontal
             }
         }
     }

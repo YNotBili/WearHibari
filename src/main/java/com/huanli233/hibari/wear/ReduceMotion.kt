@@ -94,11 +94,12 @@ import kotlinx.coroutines.delay
  *  - `ConfirmationDialog.kt`'s `dialogAnimatedDelay` (was `:580-582`), which was not a sampler but
  *    [wearAnimatedDelay] with the reduce-motion branch deleted, so it delayed unconditionally.
  *
- * All five are gone from those files, and both `animatedDelay` consumers now call this pair:
- * `ConfirmationDialog.kt:238`/`:244`, `:336`/`:338`, `:409`/`:411`, `:603`/`:605`, `:651`/`:653`, and
- * `OpenOnPhoneDialog.kt:155` with `:173`. The two notes this left behind have since been corrected:
- * `AnimatedText.kt` now ports upstream's reduce-motion branch on top of [wearReduceMotionEnabled], and
- * `Dialog.kt` records that what is missing there is the offset-driven background scale, not the setting.
+ * All five are gone from those files, and both `animatedDelay` consumers now call this pair — named by
+ * function, since the line numbers this bullet used to carry went stale with every edit to those two
+ * files: `ConfirmationDialogContent`, `SuccessConfirmationDialogContent`,
+ * `FailureConfirmationDialogContent`, `confirmationDialogContentWrapper` and
+ * `confirmationDialogIconContainer` in `ConfirmationDialog.kt`, and `OpenOnPhoneDialogContent` in its
+ * own file.
  */
 
 /**

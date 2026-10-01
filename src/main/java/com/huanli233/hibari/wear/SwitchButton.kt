@@ -29,8 +29,8 @@ import com.huanli233.hibari.ui.geometry.Shape
 import com.huanli233.hibari.ui.graphics.Color
 import com.huanli233.hibari.ui.graphics.lerp
 import com.huanli233.hibari.ui.graphics.takeOrElse
+import com.huanli233.hibari.ui.text.TextAlign
 import com.huanli233.hibari.ui.thenViewAttribute
-import com.huanli233.hibari.ui.thenViewAttributeIfNotNull
 import com.huanli233.hibari.ui.unit.Dp
 import com.huanli233.hibari.ui.unit.DpSize
 import com.huanli233.hibari.ui.unit.PaddingValues
@@ -58,13 +58,12 @@ import com.huanli233.hibari.wear.view.WearSwitchButtonView
  *  * `transformation` (`Modifier.surface`): the scrim/elevation treatment a button gets inside a
  *    [ContainerSpec]-backed container. Nothing in this module ports `SurfaceTransformation` yet, and
  *    the plain path of `Modifier.surface` is what [SwitchButtonSurfaceDrawable] reproduces.
- *  * `TextConfiguration(overflow = Ellipsis, maxLines = 3 / 2, textAlign = Start)`: upstream passes
- *    that to the slot's `Text` through a composition local, which Hibari has no equivalent of. The
- *    slot keeps its colour and type style, so a caller that wants the truncation has to spell out
- *    `maxLines` and `overflow` on its own [Text].
- *  * Semantics: `role = Switch`, `role = Button`, the `On`/`Off` `stateDescription` and
- *    `LocalHapticFeedback`'s toggle pulses have no Hibari surface. `toggleContentDescription` and
- *    `containerClickLabel` do survive, as `View.contentDescription`.
+ *  * Semantics: `role = Switch` (`:1903`) and `role = Button` (`:365`) have no Hibari surface — what a
+ *    role turns into is decided by compose-ui's own semantics-to-node mapping, which the reference tree
+ *    does not carry, so there is nothing here to copy a value from. `LocalHapticFeedback`'s toggle
+ *    pulses are not ported either. The `On`/`Off` `stateDescription` does survive, through
+ *    [switchButtonStateDescription] and only on API 30+. `toggleContentDescription` and
+ *    `containerClickLabel` survive as `View.contentDescription`.
  *  * `defaultMinSize(minWidth = 48.dp)` on the split toggle section is left out because the floor
  *    cannot bind, not because it cannot be set: `CheckboxButton.kt` sets it through
  *    `View.setMinimumWidth`, and here the section is a 32.dp switch plus 14.dp of padding on each
@@ -75,9 +74,8 @@ import com.huanli233.hibari.wear.view.WearSwitchButtonView
  *
  * The bare control of `SelectionControls.kt` is a different component: upstream's bare switch is
  * `Switch` (material3's is a private drawing primitive), and its `SwitchButton` is the labelled row
- * below. That file still names its bare switch `SwitchButton`, so it overloads this function at a
- * shorter arity - this one requires a `label`, so no call can be ambiguous - and keeps its own
- * `BareSwitchButtonColors` / `BareSwitchButtonDefaults` out of upstream's way.
+ * below. That file now declares its bare control under upstream's material name, `fun Switch`, with
+ * `SwitchDefaults` beside it, so the two are separate entries rather than an overload of one another.
  */
 
 /**
@@ -123,7 +121,8 @@ fun SwitchButton(
             )
             // Upstream's whole row is the `toggleable`, so the labels toggle the control too.
             .clickable(enabled) { onCheckedChange(!checked) }
-            .padding(contentPadding),
+            .padding(contentPadding)
+            .switchButtonStateDescription(checked),
     ) {
         if (iconSlot != null) {
             Box(modifier = Modifier.gravity(Gravity.CENTER_VERTICAL)) {
@@ -141,6 +140,13 @@ fun SwitchButton(
                 TunationLocalProvider(
                     LocalContentColor provides contentColor,
                     LocalTextStyle provides labelStyle,
+                    // `material3/SwitchButton.kt:168-173`.
+                    LocalTextConfiguration provides
+                        TextConfiguration(
+                            TextAlign.Start,
+                            TextOverflow.Ellipsis,
+                            maxLines = 3,
+                        ),
                     content = { labelSlot() },
                 )
             }
@@ -150,6 +156,13 @@ fun SwitchButton(
                     TunationLocalProvider(
                         LocalContentColor provides secondaryColor,
                         LocalTextStyle provides secondaryStyle,
+                        // `material3/SwitchButton.kt:209-214`.
+                        LocalTextConfiguration provides
+                            TextConfiguration(
+                                TextAlign.Start,
+                                TextOverflow.Ellipsis,
+                                maxLines = 2,
+                            ),
                         content = { secondarySlot?.invoke(this) },
                     )
                 }
@@ -181,9 +194,10 @@ fun SwitchButton(
  * @param colors [SplitSwitchButtonColors], or `null` for
  *   [SwitchButtonDefaults.splitSwitchButtonColors]; see [SwitchButton] for why a `@Tunable`
  *   default cannot read the theme.
- * @param containerClickLabel Upstream's `onClickLabel` for the body's tap area, which has no
- *   accessibility surface here, so it lands on `View.contentDescription` as the toggle section's
- *   description does.
+ * @param containerClickLabel Upstream's `onClickLabel` for the body's tap area. Its faithful target is
+ *   the labelled click action that [cardLongClickable] writes through
+ *   `AccessibilityNodeInfo.addAction`, which this module does not emit here yet, so the string lands on
+ *   `View.contentDescription` the way the toggle section's description does.
  */
 @Tunable
 fun SplitSwitchButton(
@@ -236,6 +250,13 @@ fun SplitSwitchButton(
                     TunationLocalProvider(
                         LocalContentColor provides contentColor,
                         LocalTextStyle provides labelStyle,
+                        // `material3/SwitchButton.kt:379-384`.
+                        LocalTextConfiguration provides
+                            TextConfiguration(
+                                TextAlign.Start,
+                                TextOverflow.Ellipsis,
+                                maxLines = 3,
+                            ),
                         content = { labelSlot() },
                     )
                 }
@@ -245,6 +266,13 @@ fun SplitSwitchButton(
                         TunationLocalProvider(
                             LocalContentColor provides secondaryColor,
                             LocalTextStyle provides secondaryStyle,
+                            // `material3/SwitchButton.kt:392-397`.
+                            LocalTextConfiguration provides
+                                TextConfiguration(
+                                    TextAlign.Start,
+                                    TextOverflow.Ellipsis,
+                                    maxLines = 2,
+                                ),
                             content = { secondarySlot?.invoke(this) },
                         )
                     }
@@ -268,7 +296,8 @@ fun SplitSwitchButton(
                     ),
                 )
                 .clickable(enabled) { onCheckedChange(!checked) }
-                .padding(contentPadding),
+                .padding(contentPadding)
+                .switchButtonStateDescription(checked),
         ) {
             Node(
                 modifier = Modifier
@@ -291,8 +320,8 @@ fun SplitSwitchButton(
 
 /**
  * The defaults of androidx.wear.compose.material3.SwitchButtonDefaults, under upstream's own name:
- * every member is upstream's, and the bare switch of `SelectionControls.kt` - which has no material3
- * counterpart to name after - keeps its `BareSwitchButtonDefaults` out of the way.
+ * every member is upstream's. The bare switch of `SelectionControls.kt` is named `Switch` there and
+ * keeps its `SwitchDefaults` beside it, so neither object shadows the other.
  */
 object SwitchButtonDefaults {
     private val HorizontalPadding: Dp = 14.dp
@@ -1230,11 +1259,33 @@ private fun Modifier.switchButtonToggle(colors: SwitchButtonToggleColors): Modif
 /**
  * `View.contentDescription`, which is the only accessibility string Hibari carries: upstream's
  * `onClickLabel` and the switch's `semantics { contentDescription = ... }` both land here.
+ *
+ * Emitted even when [description] is null, because null is not a behaviour here: it is the field's
+ * default on a freshly-created view, and the two receivers of this modifier — the label `Row`
+ * (`LinearLayout`) and the toggle's [WearSwitchButtonView] (`View`) — are not text-bearing, so a null
+ * description contributes nothing to the accessibility node either way. That is what upstream's
+ * absent `semantics` leaves too (reference `material3/SwitchButton.kt:440-444`). Keeping the attribute
+ * in the chain is what lets a description turning off patch instead of recreating that node — for the
+ * label row, the whole subtree of labels under it.
  */
 private fun Modifier.switchButtonContentDescription(description: String?): Modifier =
-    this.thenViewAttributeIfNotNull<View, String>(uniqueKey, description) {
+    this.thenViewAttribute<View, String?>(uniqueKey, description) {
         contentDescription = it
     }
+
+/**
+ * The `semantics { stateDescription = currentStateDescription }` of upstream's two switch rows — on
+ * [SwitchButton]'s own row at `material3/SwitchButton.kt:199` and on the *toggle section* of
+ * [SplitSwitchButton] at `:434` — with the value picked from `checked` at `:147-151` and `:333-337` out
+ * of the two keys `internal/Strings.kt:110-113` name, which this module ships verbatim as "ON" / "OFF".
+ * The delegate, the API 30 gate and the always-emitted rule are in [wearStateDescription].
+ */
+private fun Modifier.switchButtonStateDescription(checked: Boolean): Modifier =
+    this.wearStateDescription(
+        checked,
+        R.string.wear_m3c_capital_on_state_description,
+        R.string.wear_m3c_capital_off_state_description,
+    )
 
 /**
  * The corners of one half of a [SplitSwitchButton]: `shape` on the edge facing out of the button,

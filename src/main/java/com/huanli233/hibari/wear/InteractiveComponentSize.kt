@@ -19,7 +19,7 @@ import com.huanli233.hibari.ui.unit.dp
  * (`InteractiveComponentSize.kt:43-45`), a no-argument modifier whose node
  * (`:67-97`) measures the child and then reports `maxOf(placeable.width, 48.dp.roundToPx())` in both
  * axes. This module already owns that rule: `Modifier.minimumInteractiveComponentSize(sizePx: Int)`
- * in `attributes/ContainerAttributes.kt:33-40` writes the same floor through
+ * in `attributes/ContainerAttributes.kt:45-49` writes the same floor through
  * `minimumWidth`/`minimumHeight`, which is the `wrap_content` equivalent of Compose's
  * max-of-measured-size. So this file does **not** declare a second modifier of that name — a caller
  * in a `@Tunable` body reaches upstream's form with

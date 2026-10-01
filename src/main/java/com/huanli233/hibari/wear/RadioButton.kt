@@ -22,6 +22,7 @@ import com.huanli233.hibari.ui.geometry.CornerBasedShape
 import com.huanli233.hibari.ui.geometry.Shape
 import com.huanli233.hibari.ui.graphics.Color
 import com.huanli233.hibari.ui.graphics.takeOrElse
+import com.huanli233.hibari.ui.text.TextAlign
 import com.huanli233.hibari.ui.text.TextStyle
 import com.huanli233.hibari.ui.thenViewAttribute
 import com.huanli233.hibari.ui.uniqueKey
@@ -51,12 +52,12 @@ import com.huanli233.hibari.wear.view.WearSelectionView
  *
  * Dropped, and not silently:
  *  - `interactionSource` and `transformation`, for the same reasons Button.kt gives.
- *  - The `semantics` roles (`Role.RadioButton` on both rows, `Role.Button` on the split container)
- *    and the split section's `onClickLabel`: Hibari has no accessibility surface yet, so
- *    [SplitRadioButton]'s `containerClickLabel` is accepted and unused.
- *  - Upstream's `TextConfiguration` (label maxLines 3 + ellipsis, secondary label maxLines 2) rides
- *    `LocalTextConfiguration`, which Hibari's `Text` does not read. The label slots stay free-form, so
- *    pass `maxLines` / `overflow` to your own `Text`.
+ *  - The `semantics` roles (`Role.RadioButton` on both rows, `Role.Button` on the split container):
+ *    what a role becomes is decided by compose-ui's own semantics-to-node mapping, which the reference
+ *    tree does not carry, so there is no value here to copy. The split section's `onClickLabel` is a
+ *    different matter — it has a Views route (`AccessibilityNodeInfo.addAction`, which
+ *    [cardLongClickable] already uses) and is simply not wired yet, so [SplitRadioButton]'s
+ *    `containerClickLabel` is accepted and unused.
  *  - `animateSelectionColor`, the slow-spec colour animation behind every resolver here, is a plain
  *    resolve at retune time. [ContainerDrawable] still cross-fades the pressed/disabled variants of a
  *    container, but selecting a radio is instant.
@@ -729,25 +730,38 @@ private fun radioLabels(
     val primary = label
     val optional = secondaryLabel
     Column(modifier = modifier) {
-        radioLabelRow(contentColor, labelStyle, primary)
+        // Upstream's two `TextConfiguration`s are byte-identical between `RadioButton`
+        // (`material3/RadioButton.kt:199-204`, `:212-217`) and `SplitRadioButton` (`:354-359`,
+        // `:370-375`), so they live here rather than at both call sites.
+        radioLabelRow(
+            contentColor,
+            labelStyle,
+            TextConfiguration(TextAlign.Start, TextOverflow.Ellipsis, maxLines = 3),
+            primary,
+        )
         if (optional != null) {
             Spacer(modifier = Modifier.height(RadioButtonDefaults.LabelSpacerSize))
-            radioLabelRow(secondaryContentColor, secondaryLabelStyle, optional)
+            radioLabelRow(
+                secondaryContentColor,
+                secondaryLabelStyle,
+                TextConfiguration(TextAlign.Start, TextOverflow.Ellipsis, maxLines = 2),
+                optional,
+            )
         }
     }
 }
 
 /**
- * Upstream's `provideScopeContent(contentColor, textStyle)`: the resolved slot colour and the token's
- * `LabelFont`/`LabelSmall` ride down to whatever the caller puts in the slot.
- *
- * Duplicated rather than shared: `Button.kt` and `Card.kt` each keep their own private version of this
- * idea, `provideContentColor` carries only the colour, and no file here may be edited from another.
+ * Upstream's `provideScopeContent(contentColor, textStyle, textConfiguration, content)` around one label
+ * row (`material3/RadioButton.kt:196-205`, `:208-218`): the row is a `Row` so the slot's
+ * `Modifier.weight` keeps working, and the resolved slot colour, the token's `LabelFont`/`LabelSmall`
+ * and the line budget ride down to whatever the caller puts in the slot.
  */
 @Tunable
 private fun radioLabelRow(
     contentColor: Color,
     textStyle: TextStyle,
+    textConfiguration: TextConfiguration,
     content: @Tunable RowScope.() -> Unit,
 ) {
     val scope = content
@@ -755,6 +769,7 @@ private fun radioLabelRow(
         TunationLocalProvider(
             LocalContentColor provides contentColor,
             LocalTextStyle provides textStyle,
+            LocalTextConfiguration provides textConfiguration,
         ) {
             scope()
         }
@@ -799,27 +814,59 @@ private fun Modifier.radioContentDescription(description: String?): Modifier =
 /**
  * [clickable] plus upstream's ContextClick haptic. `HapticFeedbackConstants.CONTEXT_CLICK` arrived in
  * API 29 and the module floors at 25, so older watches just get the click.
+ *
+ * The haptic belongs to the listener, not to the command: upstream performs it and the selection
+ * callback in the same click body, ungated by `selected` — `LocalHapticFeedback` at
+ * `material3/RadioButton.kt:139` performed at `:168`, and the split section's pair at `:384` and
+ * `:393` — so every enabled click buzzes exactly once, whether or not the selection moved. Installing
+ * `null` while disabled is what keeps a disabled control silent, matching upstream's
+ * `selectable(enabled = false, …)` never reaching its `onClick`.
+ *
+ * One [RadioClickHandler] serves a View for that View's whole lifetime and only its `command` moves,
+ * so a retune allocates no listener; the install still precedes the flags, as it already did here, so
+ * `setOnClickListener`'s own `if (!isClickable()) setClickable(true)` cannot undo a disabled state.
  */
 private fun Modifier.radioSelectionClickable(enabled: Boolean, onClick: () -> Unit): Modifier =
     this.thenViewAttribute<View, RadioClickCommand>(
         uniqueKey,
         RadioClickCommand(enabled, onClick),
     ) { command ->
-        val view = this
-        setOnClickListener(if (command.enabled) {
-            View.OnClickListener {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                }
-                command.onClick()
-            }
-        } else {
-            null
-        })
+        val handler = radioClickHandler()
+        handler.command = command
+        setOnClickListener(if (command.enabled) handler else null)
         isClickable = command.enabled
         isLongClickable = command.enabled
         this.isEnabled = command.enabled
     }
+
+/**
+ * The one click listener a view gets from [radioSelectionClickable]. It reads the view to buzz from
+ * the callback argument rather than a captured receiver, so the object parked in the tag holds no
+ * reference back to the view that holds it.
+ *
+ * Keyed tag (`R.id.hibari_wear_radio_click_handler`, `res/values/ids.xml`) because `View` has no
+ * getter for its click listener. It is a different class from
+ * [com.huanli233.hibari.wear.attributes.clickable]'s handler and therefore a different key: two
+ * handler types under one key would make each one's cast fail on the other's object and silently
+ * replace the live listener. `SplitRadioButton` puts the other one on its own `Row`
+ * (`:263`) and this one on its `Box` (`:299`) — distinct views today, but that is exactly the pair
+ * that must not share a slot.
+ */
+private class RadioClickHandler : View.OnClickListener {
+    var command: RadioClickCommand? = null
+
+    override fun onClick(view: View) {
+        val current = command ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+        }
+        current.onClick()
+    }
+}
+
+private fun View.radioClickHandler(): RadioClickHandler =
+    (getTag(R.id.hibari_wear_radio_click_handler) as? RadioClickHandler)
+        ?: RadioClickHandler().also { setTag(R.id.hibari_wear_radio_click_handler, it) }
 
 /**
  * `enabled` plus the handler itself, for the same reason [com.huanli233.hibari.wear.attributes.clickable]

@@ -41,7 +41,9 @@ fun Icon(
             .image(image)
             .contentDescription(contentDescription)
             .scaleType(ImageView.ScaleType.FIT_CENTER)
-            .run { if (resolvedTint.isSpecified) imageTint(resolvedTint) else this }
+            // Emitted unconditionally; see [imageTint] for why a tint that drops out of the chain is
+            // a view rebuild rather than a clear.
+            .imageTint(resolvedTint)
     )
 }
 

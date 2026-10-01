@@ -3,32 +3,21 @@ package com.huanli233.hibari.wear
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
-import com.huanli233.hibari.foundation.Box
 import com.huanli233.hibari.foundation.BoxScope
-import com.huanli233.hibari.foundation.Column
 import com.huanli233.hibari.foundation.Row
 import com.huanli233.hibari.foundation.RowScope
-import com.huanli233.hibari.foundation.Spacer
-import com.huanli233.hibari.foundation.attributes.height
 import com.huanli233.hibari.foundation.attributes.minHeight
 import com.huanli233.hibari.foundation.attributes.padding
-import com.huanli233.hibari.foundation.attributes.size
 import com.huanli233.hibari.runtime.Tunable
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.geometry.Shape
-import com.huanli233.hibari.ui.graphics.Color
 import com.huanli233.hibari.ui.graphics.takeOrElse
-import com.huanli233.hibari.ui.text.TextStyle
 import com.huanli233.hibari.ui.thenViewAttribute
-import com.huanli233.hibari.ui.uniqueKey
-import com.huanli233.hibari.ui.unit.Dp
-import com.huanli233.hibari.ui.unit.DpSize
 import com.huanli233.hibari.ui.unit.PaddingValues
-import com.huanli233.hibari.ui.unit.dp
+import com.huanli233.hibari.ui.uniqueKey
 import com.huanli233.hibari.wear.attributes.clickable
 import com.huanli233.hibari.wear.attributes.container
 import com.huanli233.hibari.wear.tokens.ChildButtonTokens
-import com.huanli233.hibari.wear.tokens.FilledButtonTokens
 import com.huanli233.hibari.wear.tokens.OutlinedButtonTokens
 
 /**
@@ -54,9 +43,6 @@ import com.huanli233.hibari.wear.tokens.OutlinedButtonTokens
  *  - `width(IntrinsicSize.Max)` (`buttonContainerModifier`, `:2437`): the Compose intrinsic pass has
  *    no `LinearLayout` equivalent. The row is `wrap_content`, so it hugs its content as upstream's
  *    does, but a child that asks for all the slack (`Modifier.weight`) will not be shrunk back.
- *  - `TextConfiguration` (label maxLines 3 + ellipsis, secondary label maxLines 2, and the
- *    start-vs-centre alignment rule at `ButtonContent`): Hibari's [Text] reads no such local, so the
- *    slot owners keep their own `maxLines` / `textAlign`, exactly as in `RadioButton.kt`.
  *
  * @param colors Defaults to `null` and resolves in the body: `ButtonDefaults.childButtonColors()`
  *   reads `MaterialTheme`, and a `@Tunable` default expression is hoisted into a non-`@Tunable`
@@ -114,8 +100,8 @@ fun ChildButton(
  * wraps the whole button in `LocalContentColor` + `LocalTextStyle provides
  * ChildButtonTokens.LabelFont.value` (`:1065-1069`) before handing the slots to `ButtonContent`
  * (`:1087-1094`), which then re-provides its own colour *and* `FilledButtonTokens` style per row.
- * Both layers are kept here; [childButtonContent] is this file's private copy of `ButtonContent`
- * (`:1284-1344`), which no other Hibari file has ported yet.
+ * Both layers are kept here, and the slots go to [ButtonContent] — the same public component upstream
+ * calls there, carrying its own per-row colour, style and [TextConfiguration].
  *
  * # Choosing between the two overloads
  *
@@ -143,109 +129,26 @@ fun ChildButton(
 ) {
     val resolved = colors ?: ButtonDefaults.childButtonColors()
     val contentColor = if (enabled) resolved.contentColor else resolved.disabledContentColor
-    val iconSlot = icon
-    val optionalLabel = secondaryLabel
     provideContentColorAndStyle(
         contentColor,
         MaterialTheme.typography.fromToken(ChildButtonTokens.LabelFont),
     ) {
         // Upstream hands the whole container chain to `ButtonContent` rather than wrapping it in a
         // second row (`:1070-1094`), so the content row is the painted, clickable surface here too.
-        childButtonContent(
+        ButtonContent(
             modifier = modifier
                 .minHeight(ButtonDefaults.Height)
                 .container(resolved.containerSpec(shape).withExplicitBorder(border))
                 .clickable(enabled, onClick)
-                .padding(contentPadding)
-                .childButtonCentered(),
-            secondaryLabel = optionalLabel,
-            icon = iconSlot,
+                .padding(contentPadding),
+            secondaryLabel = secondaryLabel,
+            icon = icon,
             enabled = enabled,
             colors = resolved,
             label = label,
         )
     }
 }
-
-/**
- * Upstream's private `ButtonContent` (`material3/Button.kt:1284-1344`), which every three-slot
- * `Button`/`FilledTonalButton`/`OutlinedButton`/`ChildButton` in that file lays its slots through —
- * icon, then a 6.dp gap, then the two label rows in a column.
- *
- * Private and `child`-prefixed rather than published as `ButtonContent`: that name belongs to
- * `Button.kt`, whose owner has not ported it, and this file may not add to it.
- *
- * Upstream's `Box(Modifier.wrapContentSize(align = Alignment.Center))` around the icon (`:1331`)
- * becomes `BoxScope.gravity(Gravity.CENTER_VERTICAL)` on the icon's own box: the Compose box wraps
- * its content, so the only axis the port can express is the cross axis the row gives it.
- */
-@Tunable
-private fun childButtonContent(
-    modifier: Modifier = Modifier,
-    secondaryLabel: (@Tunable RowScope.() -> Unit)? = null,
-    icon: (@Tunable BoxScope.() -> Unit)? = null,
-    enabled: Boolean = true,
-    colors: ButtonColors,
-    label: @Tunable RowScope.() -> Unit,
-) {
-    val typography = MaterialTheme.typography
-    val labelColor = if (enabled) colors.contentColor else colors.disabledContentColor
-    val secondaryLabelColor =
-        if (enabled) colors.secondaryContentColor else colors.disabledSecondaryContentColor
-    val iconColor = if (enabled) colors.iconColor else colors.disabledIconColor
-    val iconSlot = icon
-    val optionalLabel = secondaryLabel
-    val primaryLabel = label
-    Row(modifier = modifier) {
-        if (iconSlot != null) {
-            Box(modifier = Modifier.gravity(Gravity.CENTER_VERTICAL)) {
-                provideContentColor(iconColor) { iconSlot() }
-            }
-            Spacer(modifier = Modifier.size(DpSize(childButtonIconSpacing, childButtonIconSpacing)))
-        }
-        Column {
-            childButtonLabelRow(labelColor, typography.fromToken(FilledButtonTokens.LabelFont)) {
-                primaryLabel()
-            }
-            if (optionalLabel != null) {
-                Spacer(modifier = Modifier.height(childButtonLabelSpacer))
-                childButtonLabelRow(
-                    secondaryLabelColor,
-                    typography.fromToken(FilledButtonTokens.SecondaryLabelFont),
-                ) {
-                    optionalLabel()
-                }
-            }
-        }
-    }
-}
-
-/**
- * Upstream's `provideScopeContent(contentColor, textStyle, content)` around a label row
- * (`Button.kt:1300-1313`): the row is a `Row` so the slot's `Modifier.weight` keeps working, and the
- * colour plus the token style ride down as the two locals [Text] reads.
- */
-@Tunable
-private fun childButtonLabelRow(
-    contentColor: Color,
-    textStyle: TextStyle,
-    content: @Tunable RowScope.() -> Unit,
-) {
-    val scope = content
-    Row {
-        provideContentColorAndStyle(contentColor, textStyle) { scope() }
-    }
-}
-
-/**
- * `ButtonDefaults.IconSpacing` (`material3/Button.kt:1946-1949`, 6.dp), restated because it lives on
- * `ButtonDefaults` in `Button.kt`, which this file may not touch. A future integration pass should
- * hoist it there and delete this.
- */
-private val childButtonIconSpacing: Dp = 6.dp
-
-/** `Button.kt:1339`: the hairline that separates the two label rows. */
-private val childButtonLabelSpacer: Dp = 1.dp
 
 /**
  * [ButtonColors.containerSpec] with the button's own `border` argument applied. Upstream hands the

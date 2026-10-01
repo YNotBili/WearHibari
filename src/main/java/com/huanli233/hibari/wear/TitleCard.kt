@@ -32,21 +32,33 @@ import com.huanli233.hibari.wear.tokens.CardTokens
  * [CardDefaults] (material3/Card.kt:861), so this module keeps that too and adds none.
  *
  * Not ported from this overload (material3/Card.kt:450-466):
- *  - `onLongClick` / `onLongClickLabel` (:454-455, forwarded to `combinedClickable` at :1265-1273):
- *    this module's `Modifier.clickable` takes only `(enabled, onClick)`; there is no long-press
- *    modifier to hand them to, and a silently-ignored callback would be worse than an absent one.
  *  - `interactionSource` (:463) and `transformation` (:464), for the same reasons as in [Card].
+ *    `onLongClick` / `onLongClickLabel` (:454-455) **are** ported, through [cardLongClickable] — the
+ *    Views form of upstream's `combinedClickable` (:1265-1273) — as they are in [Card].
+ *    `transformation` is the one parameter every entry point here loses, the two non-clickable ones
+ *    too (`NonClickableCard.kt:324` and :423 declare it, neither declares `interactionSource`):
+ *    `material3/SurfaceTransformation.kt:62-95` is an interface whose members are a `Painter` taken
+ *    and returned (:74-78) plus two `GraphicsLayerScope` hooks (:86, :94), and Hibari has neither
+ *    type. What that costs a caller: a card inside a transforming list cannot scale, rotate or fade
+ *    its container separately from its content — the whole card scrolls as one flat view.
  *  - the `containerPainter` overload (material3/Card.kt:561-604) and its non-clickable twin
- *    (material3/NonClickableCard.kt:413-451): `Painter` has no counterpart here, so
- *    `CardDefaults.cardWithContainerPainterColors` and
- *    `CardDefaults.CardWithContainerPainterContentPadding` (material3/Card.kt:1069-1075) stay
- *    unreachable as well. This is also the whole of what the design docs call an "image card":
- *    there is no `ImageCard` composable in `androidx.wear.compose.material3` — only these
+ *    (material3/NonClickableCard.kt:413-451). The reason is one type: there is no `Painter` in
+ *    Hibari, so nothing here can layer an image under a scrim the way `cardContainerModifier`'s
+ *    `painter` argument does (material3/Card.kt:1262). That reason covers the overload only, **not**
+ *    the values it reads — [CardDefaults.cardWithContainerPainterColors],
+ *    [CardDefaults.CardWithContainerPainterContentPadding] (material3/Card.kt:1069-1075, the pair
+ *    those two overloads default to at :572/:574 and :420/:422) and [CardDefaults.scrimColor]
+ *    (:1032-1038) are all ported on `CardDefaults`, so a card that grows a draw layer later has its
+ *    numbers already. The same split is recorded in `Card.kt`'s own header note.
+ *    What is therefore missing is the image-background card itself: the design docs' "image card"
+ *    has no `ImageCard` composable in `androidx.wear.compose.material3` — only these
  *    `containerPainter` overloads, whose samples are named `*ImageCardSample`
- *    (material3/Card.kt:173-176, material3/NonClickableCard.kt:117-120), and the internal
- *    `ImageCardTokens` that feed `CardDefaults.scrimColor` and
- *    `cardWithContainerPainterColors` (material3/Card.kt:1032-1038, :1118-1128). So no such
- *    component is declared here either.
+ *    (material3/Card.kt:173-176, material3/NonClickableCard.kt:117-120) — and no such component is
+ *    declared here either. The gap is exactly one parameter wide: strip `containerPainter` from
+ *    :562-577 / :414-424 and what is left is the signature landed here for that entry point, slot for
+ *    slot, the only other difference being the `colors` and `contentPadding` defaults named above. So
+ *    the missing draw layer is the whole distance, and a caller cannot reach an image-background
+ *    TitleCard by any combination of the parameters that are here.
  *
  * `minHeight` is deliberately *not* a parameter: upstream's `TitleCard` has none, and
  * `cardContainerModifier` pins it to `CardDefaults.Height` (material3/Card.kt:1257) through this
@@ -55,6 +67,9 @@ import com.huanli233.hibari.wear.tokens.CardTokens
  * @param onClick Will be called when the user clicks the card
  * @param title A slot for displaying the title of the card, expected to be one or two lines of text.
  * @param modifier Modifier to be applied to the card
+ * @param onLongClick Called when this card is long clicked (long-pressed). When this callback is
+ *   set, [onLongClickLabel] should be set as well.
+ * @param onLongClickLabel Semantic / accessibility label for the [onLongClick] action.
  * @param time An optional slot for displaying the time relevant to the contents of the card,
  *   expected to be a short piece of text. Depending on whether we have a [content] or not, can be
  *   placed at the end of the [title] line or above it.
@@ -78,6 +93,8 @@ fun TitleCard(
     onClick: () -> Unit,
     title: @Tunable RowScope.() -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
+    onLongClickLabel: String? = null,
     time: (@Tunable () -> Unit)? = null,
     subtitle: (@Tunable ColumnScope.() -> Unit)? = null,
     enabled: Boolean = true,
@@ -99,6 +116,8 @@ fun TitleCard(
                 border = border,
                 contentPadding = contentPadding,
                 onClick = onClick,
+                onLongClick = onLongClick,
+                onLongClickLabel = onLongClickLabel,
                 enabled = enabled,
             ),
             time = time,
@@ -117,6 +136,7 @@ fun TitleCard(
  * to disable — so it differs from [Card]'s non-clickable form, which does take one. Upstream's
  * `focusable(enabled = true, interactionSource)` and the `mergeDescendants` semantics wrapper
  * (material3/Card.kt:1275-1277) are not portable here and are dropped, as they are in [Card].
+ * Upstream's `transformation` (:324) is dropped too, for the reason its clickable twin's header gives.
  *
  * @param title A slot for displaying the title of the card, expected to be one or two lines of text.
  * @param modifier Modifier to be applied to the card
@@ -157,6 +177,11 @@ fun TitleCard(
                 border = border,
                 contentPadding = contentPadding,
                 onClick = null,
+                // Upstream's non-clickable twin forwards `onLongClick = null` / `onLongClickLabel =
+                // null` with `enabled = true` (material3/NonClickableCard.kt:332-334) — note it is
+                // `true` there, unlike the single-slot non-clickable Card's `false` at :82.
+                onLongClick = null,
+                onLongClickLabel = null,
                 enabled = true,
             ),
             time = time,
@@ -239,8 +264,23 @@ fun TitleCardContent(
 
 /**
  * This port's [Card] container chain, for a card that lays its own content out instead of using
- * [Card]'s single slot: `cardSizeModifier(minHeight) → fillMaxWidth → surface → clickable →
- * padding` (material3/Card.kt:1279-1283), in the order [Card] applies it.
+ * [Card]'s single slot.
+ *
+ * The textual order below differs from upstream's `cardSizeModifier(minHeight) → fillMaxWidth →
+ * surface → clickable → padding` (material3/Card.kt:1279-1283), and that difference is not
+ * observable in Views: `minHeight` writes `View.minimumHeight`
+ * (`hibari-foundation/.../attributes/ViewAttributes.kt:97-101`) and `padding` writes the view's own
+ * padding (`.../PaddingAttributes.kt:15`), two independent sinks on one view, so no chain order can
+ * change the result. Upstream's outer `defaultMinSize` floors the padded box; a wrap_content
+ * `ViewGroup` measures its own padding into its result and `getSuggestedMinimumHeight()` supplies
+ * the same floor, which is the same `max(content + padding, minHeight)` expression. [Card]'s own
+ * chains end the same way for the same reason.
+ *
+ * What is NOT settled from source on this machine: the framework's measure step was not read (no
+ * `LinearLayout` sources here), so the last sentence rests on standard Android behaviour plus this
+ * module's own notes in `InteractiveComponentSize.kt:23,34-38,48-50`. The one test that decides it is
+ * a height read of a `CardDefaults.Height` card on a watch: 88.dp end to end is parity, 112.dp means
+ * the floor really is inside the padding.
  */
 private fun Modifier.titleCardContainer(
     colors: CardColors,
@@ -248,12 +288,15 @@ private fun Modifier.titleCardContainer(
     border: BorderStroke?,
     contentPadding: PaddingValues,
     onClick: (() -> Unit)?,
+    onLongClick: (() -> Unit)?,
+    onLongClickLabel: String?,
     enabled: Boolean,
 ): Modifier {
     var chain = matchParentWidth()
         .container(colors.containerSpec(shape, border))
     if (onClick != null) {
         chain = chain.clickable(enabled = enabled, onClick = onClick)
+            .cardLongClickable(enabled = enabled, onLongClick = onLongClick, onLongClickLabel = onLongClickLabel)
     }
     return chain.padding(contentPadding).minHeight(CardDefaults.Height)
 }

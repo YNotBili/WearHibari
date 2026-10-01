@@ -704,21 +704,53 @@ private data class SliderButtonCommand(
  * The port of `repeatableClickable`'s click half (`materialcore/RepeatableClickable.kt:89-101`),
  * applied to [SliderButtonView] for the repeat.
  * [com.huanli233.hibari.wear.attributes.clickable] is not used because it also turns long-clicking
- * on (`WearInteractionAttributes.kt:22`), and the framework long press fires on the very 500 ms
- * boundary the repeat owns.
+ * on (`WearInteractionAttributes.kt:41`), and the framework long press fires on the very 500 ms
+ * boundary the repeat owns: `SliderButtonView` switches `isLongClickable` off in its own `init`
+ * (`view/WearSliderView.kt:336`) and nothing here writes it back, just as nothing here writes
+ * `isFocusable`.
  *
- * The command carries a lambda, so the attribute never compares equal and every retune re-applies it.
- * That is deliberate and cheap here: all three writes are sets, not adds — `setOnClickListener`
- * replaces the handler, so a retune cannot stack listeners the way an `addOn*Listener` would.
+ * The command carries a lambda, so the attribute never compares equal and every retune re-applies it —
+ * `ViewAttribute.equals` compares `key` and `value` only, so keying this on `enabled` alone would leave
+ * a button whose click closed over a composition value firing the closure from the first tune. What
+ * re-applies is now a write, not a build: one [SliderClickHandler] serves a View for that View's whole
+ * lifetime and only its `command` moves, so a tune allocates nothing. Both installs are sets rather
+ * than adds, so a retune cannot stack handlers the way an `addOn*Listener` would.
+ *
+ * The install precedes the flags, which is a change from the previous order. `setOnClickListener` runs
+ * its own `if (!isClickable()) setClickable(true)`, so writing `isClickable = false` first and
+ * installing `null` second handed a disabled button its clickable flag back.
  */
 private fun Modifier.sliderInlineButton(command: SliderButtonCommand): Modifier =
     this.thenViewAttribute<SliderButtonView, SliderButtonCommand>(uniqueKey, command) { value ->
+        val handler = sliderClickHandler()
+        handler.command = value
+        setOnClickListener(if (value.enabled) handler else null)
         isEnabled = value.enabled
         isClickable = value.enabled
-        setOnClickListener(
-            if (value.enabled) View.OnClickListener { clicked -> value.onClick(clicked) } else null
-        )
     }
+
+/**
+ * The one click listener a [SliderButtonView] gets from this file: it dispatches through [command],
+ * which the attribute replaces on every tune that moves the lambda or `enabled`. The repeat reaches it
+ * through `super.performClick()` (`view/WearSliderView.kt:415-418`), so a held button keeps firing the
+ * current command instead of the one installed when the hold began, and a button disabled mid-hold
+ * stops at [SliderButtonCommand.enabled] the way upstream's `while (enabled)` does
+ * (`RepeatableClickable.kt:110`).
+ *
+ * Kept in a keyed tag (`R.id.hibari_wear_slider_click_handler`, `res/values/ids.xml`) because `View`
+ * has no getter for its click listener, so an installed one cannot be read back.
+ */
+private class SliderClickHandler : View.OnClickListener {
+    var command: SliderButtonCommand? = null
+
+    override fun onClick(view: View) {
+        command?.onClick?.invoke(view)
+    }
+}
+
+private fun View.sliderClickHandler(): SliderClickHandler =
+    (getTag(R.id.hibari_wear_slider_click_handler) as? SliderClickHandler)
+        ?: SliderClickHandler().also { setTag(R.id.hibari_wear_slider_click_handler, it) }
 
 private fun Modifier.sliderBar(spec: SliderBarSpec): Modifier =
     this.thenViewAttribute<WearSliderView, SliderBarSpec>(uniqueKey, spec) {

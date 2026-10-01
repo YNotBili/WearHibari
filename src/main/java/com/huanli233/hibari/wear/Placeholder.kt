@@ -636,12 +636,18 @@ private fun View.installPlaceholderOverlay(
 }
 
 /**
- * Tag keys under which each placeholder effect remembers its own overlay entry, because
- * `ViewOverlay` exposes no way to enumerate what it holds. `View.generateViewId()` is what
- * `setTag(int, Object)` requires.
+ * Tag keys under which each placeholder effect remembers its own overlay entry, because `ViewOverlay`
+ * exposes no way to enumerate what it holds.
+ *
+ * Both are resource ids from this module's `res/values/ids.xml`, which is a requirement and not a
+ * style choice: `View.setTag(int, Object)` throws `IllegalArgumentException` unless
+ * `key >>> 24 >= 2` (frameworks/base `core/java/android/view/View.java:28068-28074`), and
+ * `View.generateViewId()` deliberately clamps to 1..0x00FFFFFF so it can never collide with an
+ * aapt-generated id (`:30845-30855`) — a high byte of 0 is exactly the rejected case, so a generated
+ * key throws on the first `setTag` instead of identifying the entry.
  */
-private val PLACEHOLDER_SKELETON_TAG_KEY = View.generateViewId()
-private val PLACEHOLDER_SHIMMER_TAG_KEY = View.generateViewId()
+private val PLACEHOLDER_SKELETON_TAG_KEY = R.id.hibari_wear_placeholder_skeleton
+private val PLACEHOLDER_SHIMMER_TAG_KEY = R.id.hibari_wear_placeholder_shimmer
 
 private val PLACEHOLDER_SHIMMER_DURATION_MS = MotionDurationTokens.DurationExtraLong2.toLong()
 private val PLACEHOLDER_WIPE_OFF_PROGRESSION_DURATION_MS =

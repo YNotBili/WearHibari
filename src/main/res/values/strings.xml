@@ -1,15 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Accessibility strings for the hibari-wear picker components, declared with the resource keys and
-  default English values of the reference tree's
+  Accessibility strings for the hibari-wear components, declared with the resource keys and default
+  English values of the reference tree's
   app-new/src/main/res/values/wear_m3c_strings.xml (read via
   androidx/wear/compose/material3/internal/Strings.kt). Key names are kept identical to upstream so
   this port reads the same resources the Wear Compose originals do.
 
   Only the keys this module actually reads are declared here: the pickers, the TimePicker/DatePicker
-  labels, and the two Slider icon descriptions. The alert-dialog, open-on-phone and selection-state
-  strings, and the picker click-to-adjust / click-to-select hints, are left for the components that
-  use them.
+  labels, the picker click-to-adjust / click-to-select hints, the two Slider icon descriptions, the
+  two alert-dialog icon descriptions and the open-on-phone message. Two upstream groups stay
+  undeclared because nothing can reach them: the selection-state descriptions (its xml:35-38, ON /
+  OFF / checked / not checked) belong to semantics this module's controls do not emit, and
+  wear_m3c_open_on_phone_icon_content_description (its xml:21) has no consumer even upstream —
+  material3/internal/Strings.kt:107-108 names it while material3/OpenOnPhoneDialog.kt:329 hands its
+  default icon contentDescription = null.
 -->
 <resources>
     <string name="wear_m3c_time_picker_hour">Hour</string>
@@ -21,10 +25,28 @@
     <string name="wear_m3c_date_picker_month">Month</string>
     <string name="wear_m3c_date_picker_year">Year</string>
     <string name="wear_m3c_date_picker_heading">Scroll to set date</string>
+    <!-- The label a picker puts on its click action: read-only adjusts, editable selects. -->
+    <string name="wear_m3c_picker_click_to_adjust_hint">Adjust the value</string>
+    <string name="wear_m3c_picker_click_to_select_hint">Select the value</string>
     <string name="wear_m3c_picker_confirm_button_content_description">Confirm</string>
     <string name="wear_m3c_picker_next_button_content_description">Next</string>
     <string name="wear_m3c_date_picker_content_description">%1$s, %2$d</string>
     <string name="wear_m3c_slider_decrease_content_description">Decrease</string>
     <string name="wear_m3c_slider_increase_content_description">Increase</string>
+    <string name="wear_m3c_alert_dialog_content_description_confirm_button">Confirm</string>
+    <string name="wear_m3c_alert_dialog_content_description_dismiss_button">Dismiss</string>
     <string name="wear_m3c_open_on_phone">Check your phone</string>
+    <!-- The accessibility state descriptions upstream puts on its selection rows: CheckboxButton
+         reads checked/not checked (material3/CheckboxButton.kt:145-150 and :312-317) and SwitchButton
+         reads ON/OFF (its :147-151 and :333-337), via internal/Strings.kt:110-119. Values are
+         byte-identical to the reference tree's wear_m3c_strings.xml. AccessibilityNodeInfo's
+         setStateDescription is API 30 (verified in android-35/36/37.1 api-versions.xml), so these
+         reach the node only at that level. The one upstream key still undeclared is
+         wear_m3c_open_on_phone_icon_content_description (its xml:21):
+         material3/OpenOnPhoneDialog.kt:329 hands its default icon contentDescription = null, so
+         nothing in that tree consumes it. -->
+    <string name="wear_m3c_checked_state_description">checked</string>
+    <string name="wear_m3c_not_checked_state_description">not checked</string>
+    <string name="wear_m3c_capital_on_state_description">ON</string>
+    <string name="wear_m3c_capital_off_state_description">OFF</string>
 </resources>

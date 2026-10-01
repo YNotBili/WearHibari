@@ -296,6 +296,17 @@ object ButtonGroupDefaults {
     }
 
     /**
+     * `ButtonGroupDefaults.minimumVerticalListContentPadding` (material3/ButtonGroup.kt:306-307):
+     * `screenHeightFraction(LARGE_VERTICAL_CONTENT_PADDING_FRACTION)`, the content padding a
+     * [ButtonGroup] asks the list for when it sits at the top or bottom edge. Upstream's consumer is
+     * `TransformingLazyColumnItemScope.minimumVerticalContentPadding`, which the `wear.lazy` port has
+     * no counterpart for, so this is the number without the hook — the same shape
+     * [CardDefaults.minimumVerticalListContentPadding] and the button-family equivalents have.
+     */
+    val minimumVerticalListContentPadding: Dp
+        @Tunable get() = screenHeightFraction(LARGE_VERTICAL_CONTENT_PADDING_FRACTION)
+
+    /**
      * Not a port — see the note on [SplitButtonGroup]. Upstream has nothing like this: its
      * `ButtonGroup` measure block never touches a child's shape.
      *

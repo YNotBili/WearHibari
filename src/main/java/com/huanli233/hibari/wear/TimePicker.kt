@@ -27,7 +27,6 @@ import com.huanli233.hibari.foundation.Node
 import com.huanli233.hibari.foundation.Row
 import com.huanli233.hibari.foundation.RowScope
 import com.huanli233.hibari.foundation.Spacer
-import com.huanli233.hibari.foundation.attributes.alpha
 import com.huanli233.hibari.foundation.attributes.height
 import com.huanli233.hibari.foundation.attributes.matchParentHeight
 import com.huanli233.hibari.foundation.attributes.matchParentSize
@@ -38,6 +37,7 @@ import com.huanli233.hibari.foundation.attributes.text
 import com.huanli233.hibari.foundation.attributes.width
 import com.huanli233.hibari.runtime.Tunable
 import com.huanli233.hibari.runtime.TunationLocalProvider
+import com.huanli233.hibari.runtime.bindState
 import com.huanli233.hibari.runtime.currentContext
 import com.huanli233.hibari.runtime.effects.LaunchedEffect
 import com.huanli233.hibari.runtime.getValue
@@ -285,13 +285,19 @@ fun TimePicker(
 
     LaunchedEffect(Unit) { fullyDrawn.animateTo(1f) }
 
-    // Built once per colour: the entry fade retunes this body every frame, and `image` is an
-    // attribute that only lands when it changes.
+    // Built once per colour: a selection change retunes this body, and `image` is an attribute that
+    // only lands when it changes.
     val checkIcon = remember(pickerColors.confirmButtonContentColor) {
         timePickerCheckDrawable(pickerColors.confirmButtonContentColor.toArgb())
     }
 
-    Box(modifier = modifier.matchParentSize().alpha(fullyDrawn.value)) {
+    // Reading `fullyDrawn.value` here would re-tune the whole picker — every column, separator and
+    // heading — once per frame of the entry fade. Alpha is a plain view property, so bind the state.
+    Box(
+        modifier = modifier
+            .matchParentSize()
+            .bindState(uniqueKey, fullyDrawn.asState()) { this.alpha = it },
+    ) {
         // Upstream's `Column(fillMaxSize, verticalArrangement = Center, horizontalAlignment = Center)`.
         // The weighted row below takes all the leftover height, so the centring arrangement has
         // nothing left to distribute; the children carry their own horizontal gravity instead.
@@ -1500,9 +1506,9 @@ private fun isTimePickerTouchExplorationEnabled(context: Context): Boolean {
 }
 
 /**
- * Upstream's `Icons.Check` (`internal/Icons.kt:95-124`) as a [Drawable]: `Icon` can only tint what
- * the framework hands back, and this module ships no drawable resources, so the one glyph [TimePicker]
- * needs is drawn from the same path data on a 960-unit viewport
+ * Upstream's `Icons.Check` (`internal/Icons.kt:95-124`) as a [Drawable]: upstream builds it as an
+ * `ImageVector` through compose-ui's icon DSL, which has no counterpart here, so the one glyph
+ * [TimePicker] needs is drawn from the same path data on a 960-unit viewport
  * (`internal/Icons.kt:222-223`). The colour is carried by the drawable rather than by the
  * `ImageView`'s colour filter, which a hand-built [Drawable] would ignore.
  */

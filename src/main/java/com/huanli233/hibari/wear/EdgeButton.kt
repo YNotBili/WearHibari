@@ -5,6 +5,7 @@ import com.huanli233.hibari.foundation.Row
 import com.huanli233.hibari.foundation.RowScope
 import com.huanli233.hibari.runtime.Tunable
 import com.huanli233.hibari.ui.Modifier
+import com.huanli233.hibari.ui.text.TextAlign
 import com.huanli233.hibari.ui.thenViewAttribute
 import com.huanli233.hibari.ui.unit.Dp
 import com.huanli233.hibari.ui.unit.dp
@@ -24,10 +25,10 @@ import com.huanli233.hibari.wear.view.WearEdgeButtonView
  *  - **`interactionSource` is not a parameter.** Upstream threads it through to the ripple
  *    (`:184-189`); with no indication system there is nothing for it to drive, and a parameter that
  *    changes nothing would be a worse promise than its absence.
- *  - **`TextConfiguration(TextAlign.Center, TextOverflow.Ellipsis, maxLines = buttonSize.maxLines())`
- *    is not provided** (`:208-215`). Hibari has no text-configuration local that [Text] reads - the
- *    same gap [ListHeader] and the button rows document - so the centring and the line budget are
- *    left to the caller's own [Text] rather than silently dropped in a way that looks like a port.
+ *  - **The label's [TextConfiguration] is scoped, as upstream scopes it** (`:273-284`):
+ *    `TextConfiguration(TextAlign.Center, TextOverflow.Ellipsis, maxLines = buttonSize.maxLines())`
+ *    goes down through [LocalTextConfiguration], so a caller's bare [Text] is centred and line-budgeted
+ *    by the button instead of having to spell both out.
  *
  * @param colors Defaults to `null` and resolves in the body: `ButtonDefaults.buttonColors()` reads
  *   `MaterialTheme`, and a `@Tunable` default expression is hoisted into a non-`@Tunable` `$default`
@@ -69,7 +70,15 @@ fun EdgeButton(
             // press on the focused button - would do nothing at all.
             .clickable(enabled, onClick),
     ) {
-        provideContentColorAndStyle(contentColor, MaterialTheme.typography.labelMedium) {
+        provideContentColorAndStyle(
+            contentColor,
+            MaterialTheme.typography.labelMedium,
+            TextConfiguration(
+                TextAlign.Center,
+                TextOverflow.Ellipsis,
+                maxLines = buttonSize.maxLines(),
+            ),
+        ) {
             Row { scope() }
         }
     }
@@ -92,13 +101,29 @@ private val EdgeButtonContentPaddingBottom: Dp = 8.dp
 /**
  * Ported from androidx.wear.compose.material3.EdgeButtonSize (`material3/EdgeButton.kt:222-253`).
  *
- * Upstream's `maximumHeight` is `internal`, as it is here, and its two other internal helpers -
- * `maximumHeightPlusPadding()` (only ever feeding `maxIntrinsicHeight`, which has no Views
- * counterpart) and `maxLines()` (only ever feeding the `TextConfiguration` this module cannot
- * provide) - are not carried over rather than carried over unused.
+ * Upstream's `maximumHeight` is `internal`, as it is here, and so is `maxLines()`, which [EdgeButton]
+ * feeds into the [TextConfiguration] it scopes around its content. The one helper not carried over is
+ * `maximumHeightPlusPadding()`: it only ever feeds `maxIntrinsicHeight`, which has no Views
+ * counterpart, so carrying it would mean carrying an unused member.
  */
 @JvmInline
 value class EdgeButtonSize internal constructor(internal val maximumHeight: Dp) {
+
+    /**
+     * The line budget a label gets at this size (`material3/EdgeButton.kt:305-312`).
+     *
+     * Upstream's `ExtraSmall`/`Small`/`Medium` arms with `else -> 3` for `Large` are copied as written,
+     * `else` arm included: the four sizes are values of a class with an `internal` constructor, so an
+     * instance of another height still has to answer.
+     */
+    internal fun maxLines(): Int =
+        when (this) {
+            ExtraSmall -> 1
+            Small -> 2
+            Medium -> 2
+            // Large
+            else -> 3
+        }
 
     companion object {
         /** The size to be applied for an extra small edge button: 46 dp. */

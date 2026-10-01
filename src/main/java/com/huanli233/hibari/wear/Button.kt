@@ -1,17 +1,30 @@
 package com.huanli233.hibari.wear
 
+import android.view.Gravity
+import android.view.View
+import android.widget.LinearLayout
+import com.huanli233.hibari.foundation.Box
+import com.huanli233.hibari.foundation.BoxScope
+import com.huanli233.hibari.foundation.Column
 import com.huanli233.hibari.foundation.Row
 import com.huanli233.hibari.foundation.RowScope
+import com.huanli233.hibari.foundation.Spacer
 import com.huanli233.hibari.foundation.attributes.minHeight
 import com.huanli233.hibari.foundation.attributes.padding
+import com.huanli233.hibari.foundation.attributes.size
 import com.huanli233.hibari.runtime.Tunable
+import com.huanli233.hibari.runtime.remember
 import com.huanli233.hibari.ui.Modifier
 import com.huanli233.hibari.ui.geometry.Shape
 import com.huanli233.hibari.ui.graphics.Color
 import com.huanli233.hibari.ui.graphics.takeOrElse
+import com.huanli233.hibari.ui.text.TextAlign
+import com.huanli233.hibari.ui.thenViewAttribute
 import com.huanli233.hibari.ui.unit.Dp
+import com.huanli233.hibari.ui.unit.DpSize
 import com.huanli233.hibari.ui.unit.PaddingValues
 import com.huanli233.hibari.ui.unit.dp
+import com.huanli233.hibari.ui.uniqueKey
 import com.huanli233.hibari.wear.attributes.clickable
 import com.huanli233.hibari.wear.attributes.container
 import com.huanli233.hibari.wear.tokens.ChildButtonTokens
@@ -73,7 +86,18 @@ fun Button(
     contentPadding: PaddingValues = ButtonDefaults.ContentPadding,
     content: @Tunable RowScope.() -> Unit,
 ) {
+    // The default set comes from `ButtonDefaults.buttonColors()`, which memoises it per `ColorScheme`.
+    // It cannot be memoised from here instead: `remember`'s calculation is `@DisallowTunableCalls`
+    // (`runtime/Tunables.kt:18`, checked by `compiler/k2/TunableCallChecker.kt:103`), so a body may not
+    // wrap a `@Tunable` factory call in one.
     val resolved = colors ?: ButtonDefaults.buttonColors()
+    // `containerSpec` costs one ContainerSpec plus one boxed disabled colour per tune
+    // (`ContainerSpec.disabledContainerColor` is `Color?`, so it cannot stay a value class), and the
+    // container attribute then compares two equal-but-distinct specs field by field
+    // (`ui/Attribute.kt:68-79` reads only key, value and reuseSupported). Both inputs are keys here and
+    // both compare by value — `ButtonColors` is a data class, `CornerBasedShape` is one too — so a
+    // caller that rebuilds an equal set still hits, and `shape` genuinely feeds the spec.
+    val spec = remember(resolved, shape) { resolved.containerSpec(shape) }
     val contentColor = if (enabled) resolved.contentColor else resolved.disabledContentColor
     val scope = content
     Row(
@@ -88,11 +112,27 @@ fun Button(
         // `defaultMinSize` has upstream.
         modifier = modifier
             .minHeight(ButtonDefaults.Height)
-            .container(resolved.containerSpec(shape))
+            .container(spec)
             .clickable(enabled, onClick)
             .padding(contentPadding),
     ) {
-        provideContentColor(contentColor) { scope() }
+        // Upstream's `SingleSlotButtonImpl` hands its children `LocalContentColor` *and*
+        // `LocalTextStyle provides labelFont` (`material3/Button.kt:2385-2388`). Each variant passes its
+        // own token — Filled `:143`, Outlined `:235` and `:410`, FilledTonal `:323` — but all four
+        // `*ButtonTokens.LabelFont` are `TypographyKeyTokens.LabelMedium`
+        // (`tokens/FilledButtonTokens.kt:37`, `tokens/FilledTonalButtonTokens.kt:36`,
+        // `tokens/OutlinedButtonTokens.kt:37`), so this one delegation point states Filled's and every
+        // variant lands on the same style, which is what [CompactButton] and [ChildButton] already do.
+        // Of upstream's `DefaultTextStyle` base (`material3/Typography.kt:339-345`) the family, weight,
+        // size, line height, tracking and the `"pnum"` features do reach the `TextView`
+        // (`attributes/ContainerAttributes.kt:57-84`); `PlatformTextStyle(includeFontPadding = false)`
+        // and `LineHeightStyle(Center, Trim.None)` have no write here — our route puts the whole line
+        // surplus under each line rather than half-leading — and `TextMotion.Animated` has no surface at
+        // all, so a label's line box sits taller than wear's.
+        provideContentColorAndStyle(
+            contentColor,
+            MaterialTheme.typography.fromToken(FilledButtonTokens.LabelFont),
+        ) { scope() }
     }
 }
 
@@ -124,6 +164,97 @@ fun OutlinedButton(
     Button(onClick, modifier, enabled, shape, resolved, contentPadding, content)
 }
 
+/**
+ * Ported from androidx.wear.compose.material3.ButtonContent (`material3/Button.kt:1284-1344`): the
+ * icon / label / secondary-label layout that upstream's slot-based `Button`, `FilledTonalButton`,
+ * `OutlinedButton` and `ChildButton` overloads all hand their slots to (`:624`, `:743`, `:861`,
+ * `:974`, `:1087`), public there so a caller building its own container can reuse the arrangement.
+ * Those slot-based overloads themselves are not ported here — [Button], [FilledTonalButton] and
+ * [OutlinedButton] take a single generic `content`, which upstream routes through
+ * `SingleSlotButtonImpl` (`:2366-2410`) rather than through this layout — so the only Hibari caller
+ * is the three-slot `ChildButton`.
+ *
+ * Upstream builds the two label rows as `provideScopeContent` *values* (`:1300-1313`, `:1315-1326`)
+ * and hands them to `Row(content = ...)`; a `@Tunable` lambda cannot be carried as a value in this
+ * engine, so each row applies the same three providers to the same slot one level in — the same scope,
+ * for the same slots.
+ *
+ * @param colors Defaults to `null` and resolves to [ButtonDefaults.buttonColors] in the body, as
+ *   upstream's default does (`:1290`); see [Button] for why a default cannot read the theme.
+ */
+@Tunable
+fun ButtonContent(
+    modifier: Modifier = Modifier,
+    secondaryLabel: (@Tunable RowScope.() -> Unit)? = null,
+    icon: (@Tunable BoxScope.() -> Unit)? = null,
+    enabled: Boolean = true,
+    colors: ButtonColors? = null,
+    label: @Tunable RowScope.() -> Unit,
+) {
+    val resolved = colors ?: ButtonDefaults.buttonColors()
+    // Upstream's `colors.contentColor(enabled)` / `secondaryContentColor(enabled)` / `iconColor(enabled)`
+    // (`:1293-1295`) are each the plain pick between the enabled and the disabled field.
+    val labelColor = if (enabled) resolved.contentColor else resolved.disabledContentColor
+    val secondaryLabelColor =
+        if (enabled) resolved.secondaryContentColor else resolved.disabledSecondaryContentColor
+    val iconColor = if (enabled) resolved.iconColor else resolved.disabledIconColor
+    val typography = MaterialTheme.typography
+    val iconSlot = icon
+    val secondarySlot = secondaryLabel
+    val primaryLabel = label
+    Row(modifier = modifier.buttonContentCentered()) {
+        if (iconSlot != null) {
+            // Upstream's `Box(Modifier.wrapContentSize(align = Alignment.Center))` (`:1331`): the box
+            // wraps its content, so the axis the port can express is the cross axis the row gives it.
+            Box(modifier = Modifier.gravity(Gravity.CENTER_VERTICAL)) {
+                provideContentColor(iconColor) { iconSlot() }
+            }
+            Spacer(
+                modifier = Modifier.size(
+                    DpSize(ButtonDefaults.IconSpacing, ButtonDefaults.IconSpacing)
+                )
+            )
+        }
+        Column {
+            Row {
+                provideContentColorAndStyle(
+                    labelColor,
+                    typography.fromToken(FilledButtonTokens.LabelFont),
+                    TextConfiguration(
+                        // Upstream's ternary (`:1307`): start-aligned as soon as anything sits beside
+                        // the label, centred only when the label is alone.
+                        if (iconSlot != null || secondarySlot != null) TextAlign.Start
+                        else TextAlign.Center,
+                        TextOverflow.Ellipsis,
+                        maxLines = 3,
+                    ),
+                ) { primaryLabel() }
+            }
+            if (secondarySlot != null) {
+                // `Spacer(Modifier.size(1.dp))` (`:1339`).
+                Spacer(modifier = Modifier.size(DpSize(1.dp, 1.dp)))
+                Row {
+                    provideContentColorAndStyle(
+                        secondaryLabelColor,
+                        typography.fromToken(FilledButtonTokens.SecondaryLabelFont),
+                        TextConfiguration(TextAlign.Start, TextOverflow.Ellipsis, maxLines = 2),
+                    ) { secondarySlot() }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * `Row(verticalAlignment = Alignment.CenterVertically)` (`material3/Button.kt:1328`) as a Views
+ * attribute: `LinearLayout.setGravity` is the only way to centre the cross axis of children that come
+ * from a caller's slot, where this file cannot hand them a `RowScope.gravity`.
+ */
+private fun Modifier.buttonContentCentered(): Modifier =
+    this.thenViewAttribute<View, Int>(uniqueKey, Gravity.CENTER_VERTICAL) {
+        if (this is LinearLayout) gravity = it
+    }
+
 object ButtonDefaults {
     val shape: Shape = ShapeTokens.CornerLarge
 
@@ -154,8 +285,32 @@ object ButtonDefaults {
      */
     val Height: Dp = FilledButtonTokens.ContainerHeight
 
+    /**
+     * `ButtonDefaults.IconSpacing` (`material3/Button.kt:1945-1949`): the gap between an icon and its
+     * text inside a button. [ButtonContent] applies it, and [CompactButtonContent] reads it from here
+     * rather than restating the number.
+     */
+    val IconSpacing: Dp = 6.dp
+
+    /**
+     * The filled set, memoised per [ColorScheme]. Building it costs eight token resolves, one
+     * `Color.copy`, four `toDisabledColor` and the [ButtonColors] itself, and every `@Tunable` body
+     * re-runs on every tune — there is no group skipping yet (`runtime/GroupCensus.kt:7` calls itself a
+     * census, not a decision).
+     *
+     * The key is the scheme instance: [Theme.kt]'s `LocalColorScheme` is a `staticTunationLocalOf`
+     * (`Theme.kt:19`) that hands back the same object until a caller re-`provides` one, and
+     * `ColorScheme` declares no `equals` (`ColorScheme.kt:14`), so identity is exactly "did the theme
+     * move". Hoisting the read above the memo is required, not style: the calculation is
+     * `@DisallowTunableCalls` (`runtime/Tunables.kt:18`). The read itself is free and adds no
+     * invalidation edge — a provided static local resolves through `StaticValueHolder.readValue`, a
+     * plain field read that records no snapshot dependency (`runtime/ValueHolders.kt:9`).
+     */
     @Tunable
-    fun buttonColors(): ButtonColors = MaterialTheme.colorScheme.filledButtonColors()
+    fun buttonColors(): ButtonColors {
+        val scheme = MaterialTheme.colorScheme
+        return remember(scheme) { scheme.filledButtonColors() }
+    }
 
     /**
      * `ButtonDefaults.buttonColors(containerColor, contentColor, secondaryContentColor, iconColor,

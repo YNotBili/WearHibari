@@ -72,8 +72,10 @@ import kotlin.math.roundToInt
  *    becomes [WearFadingExpandingLabelView.onWidthMeasured] writing the same state, so the two-pass
  *    measure — `maxTextWidth` null on the first pass, `Constraints()` there (`:133`), unbounded here —
  *    survives as it does upstream.
- *  - `LocalTextConfiguration` is a known gap, so [textAlign] defaults to null and [maxLines] to
- *    `Int.MAX_VALUE`, the same choices [Text] makes.
+ *  - [textAlign] and [maxLines] default to null here and fall back to [LocalTextConfiguration] in the
+ *    body, which is upstream's `= LocalTextConfiguration.current.textAlign` / `.maxLines`
+ *    (`:96`, `:99`) — a `@Tunable` default expression is hoisted out of the tunable context and cannot
+ *    read a local, so the read happens in the body as it does in [Text].
  *
  * Not ported:
  *  - `fontStyle` and `textDecoration` (`:91`, `:95`): Hibari's [TextStyle] has neither field and
@@ -102,7 +104,7 @@ fun FadingExpandingLabel(
     textAlign: TextAlign? = null,
     lineHeight: TextUnit = TextUnit.Unspecified,
     softWrap: Boolean = true,
-    maxLines: Int = Int.MAX_VALUE,
+    maxLines: Int? = null,
     minLines: Int = 1,
     style: TextStyle? = null,
     animationSpec: FiniteAnimationSpec<Float>? = null,
@@ -111,6 +113,10 @@ fun FadingExpandingLabel(
     val spToPx = density.density * density.fontScale
     val layoutDirection = LocalLayoutDirection.current
     val base = style ?: currentTextStyle()
+    // Upstream reads the ambient configuration in its default expressions (`:96`, `:99`); one read per
+    // parameter the caller left unset, as [Text] does, so a label that spells both out never subscribes.
+    val resolvedTextAlign = textAlign ?: LocalTextConfiguration.current.textAlign
+    val resolvedMaxLines = maxLines ?: LocalTextConfiguration.current.maxLines
     // `mergedTextStyle` (`:109-121`), minus the two fields Hibari's TextStyle does not carry.
     val merged = base.copy(
         fontSize = fontSize.fadingLabelOr(base.fontSize),
@@ -135,8 +141,8 @@ fun FadingExpandingLabel(
         resolvedColor,
         measuredWidthPx,
         softWrap,
-        maxLines,
-        textAlign,
+        resolvedMaxLines,
+        resolvedTextAlign,
         layoutDirection,
         spToPx,
     ) {
@@ -145,9 +151,9 @@ fun FadingExpandingLabel(
             style = merged,
             color = resolvedColor,
             maxWidthPx = measuredWidthPx,
-            maxLines = maxLines,
+            maxLines = resolvedMaxLines,
             softWrap = softWrap,
-            textAlign = textAlign,
+            textAlign = resolvedTextAlign,
             layoutDirection = layoutDirection,
             density = density.density,
             fontScale = density.fontScale,
@@ -415,8 +421,10 @@ private fun fadingLabelLineSpacingExtra(
 /**
  * [TextAlign] onto `StaticLayout`'s alignment. `ALIGN_OPPOSITE` flips with the paragraph direction, so
  * an `End`/`Right` label on an LTR screen is right-aligned and one on an RTL screen is left-aligned —
- * upstream hands the same job to `TextAlign` on the drawn `Text` (`:190`). A null alignment with an RTL
- * layout direction follows the screen, which is what upstream's `LocalTextConfiguration` default does.
+ * upstream hands the same job to `TextAlign` on the drawn `Text` (`:190`). A null alignment — what both
+ * this label's own default and [TextConfigurationDefaults.TextAlign] give, so what reaches here outside
+ * any provider — with an RTL layout direction follows the screen, which is upstream's
+ * `textAlign ?: TextAlign.Unspecified` merge (`:115`) doing the same.
  */
 private fun fadingLabelAlignment(
     textAlign: TextAlign?,
