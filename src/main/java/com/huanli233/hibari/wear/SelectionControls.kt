@@ -374,29 +374,48 @@ data class BareRadioButtonColors(
  * `toDisabledColor()` (alpha 0.38, `material/ContentAlpha.kt:110`), resolving the enabled ones from v1's
  * `Colors` roles: `secondary` for the checked box and `contentColorFor(primary @ 0.5 alpha composited over
  * surface)` for the unchecked one (`:277-285`). This module ports material3's [ColorScheme] and has no v1
- * `Colors` object to read, so those roles have no counterpart and the enabled colours come from the row's
- * material3 tokens instead; the factory is also no-arg, because its defaults would read `MaterialTheme` and a
- * `@Tunable` default cannot (see [Checkbox]). Two of v1's defaults are kept as written, so the unchecked pair
- * shares one colour (`:283`, `:294`).
+ * `Colors` object to read, and no `surface` role to composite that expression over, so the enabled defaults
+ * come from the row's material3 tokens instead; the factory takes `Color?` rather than upstream's
+ * non-null `Color` because a `@Tunable` default expression is hoisted into a non-`@Tunable` `$default` that
+ * cannot read the theme (see [Checkbox]). Upstream's two defaults that *reference another parameter* are kept
+ * as written: the unchecked checkmark follows the unchecked box (`:283`).
+ *
+ * That substitution is why the disabled roles branch. A colour the caller passes is the one upstream would
+ * derive its disabled role from, and v1's `toDisabledColor` **sets** alpha to 0.38
+ * (`material/Colors.kt:151-152`); an unset one keeps material3's own disabled tokens, whose opacities are
+ * 0.12 and 0.38 and are not v1's flat 0.38.
  */
 object CheckboxDefaults {
     @Tunable
-    fun colors(): CheckboxColors = with(MaterialTheme.colorScheme) {
-        val uncheckedBox = CheckboxButtonTokens.UncheckedBoxColor.resolve(this)
-        val disabledUncheckedBox = CheckboxButtonTokens.DisabledUncheckedBoxColor.resolve(this)
-            .toDisabledColor(CheckboxButtonTokens.DisabledUncheckedBoxOpacity)
+    fun colors(
+        checkedBoxColor: Color? = null,
+        checkedCheckmarkColor: Color? = null,
+        uncheckedBoxColor: Color? = null,
+        uncheckedCheckmarkColor: Color? = null,
+    ): CheckboxColors = with(MaterialTheme.colorScheme) {
+        val box = checkedBoxColor ?: CheckboxButtonTokens.CheckedBoxColor.resolve(this)
+        val mark = checkedCheckmarkColor ?: CheckboxButtonTokens.CheckedCheckmarkColor.resolve(this)
+        val boxUnchecked = uncheckedBoxColor ?: CheckboxButtonTokens.UncheckedBoxColor.resolve(this)
+        val markUnchecked = uncheckedCheckmarkColor ?: boxUnchecked
         CheckboxColors(
-            checkedBoxColor = CheckboxButtonTokens.CheckedBoxColor.resolve(this),
-            checkedCheckmarkColor = CheckboxButtonTokens.CheckedCheckmarkColor.resolve(this),
-            uncheckedBoxColor = uncheckedBox,
-            uncheckedCheckmarkColor = uncheckedBox,
-            disabledCheckedBoxColor = CheckboxButtonTokens.DisabledCheckedBoxColor.resolve(this)
-                .toDisabledColor(CheckboxButtonTokens.DisabledCheckedBoxOpacity),
-            disabledCheckedCheckmarkColor =
-                CheckboxButtonTokens.DisabledCheckedCheckmarkColor.resolve(this)
+            checkedBoxColor = box,
+            checkedCheckmarkColor = mark,
+            uncheckedBoxColor = boxUnchecked,
+            uncheckedCheckmarkColor = markUnchecked,
+            disabledCheckedBoxColor = checkedBoxColor?.copy(alpha = ColorScheme.DisabledContentAlpha)
+                ?: CheckboxButtonTokens.DisabledCheckedBoxColor.resolve(this)
+                    .toDisabledColor(CheckboxButtonTokens.DisabledCheckedBoxOpacity),
+            disabledCheckedCheckmarkColor = checkedCheckmarkColor
+                ?.copy(alpha = ColorScheme.DisabledContentAlpha)
+                ?: CheckboxButtonTokens.DisabledCheckedCheckmarkColor.resolve(this)
                     .toDisabledColor(CheckboxButtonTokens.DisabledCheckedCheckmarkOpacity),
-            disabledUncheckedBoxColor = disabledUncheckedBox,
-            disabledUncheckedCheckmarkColor = disabledUncheckedBox,
+            disabledUncheckedBoxColor = uncheckedBoxColor?.copy(alpha = ColorScheme.DisabledContentAlpha)
+                ?: CheckboxButtonTokens.DisabledUncheckedBoxColor.resolve(this)
+                    .toDisabledColor(CheckboxButtonTokens.DisabledUncheckedBoxOpacity),
+            disabledUncheckedCheckmarkColor = uncheckedCheckmarkColor
+                ?.copy(alpha = ColorScheme.DisabledContentAlpha)
+                ?: CheckboxButtonTokens.DisabledUncheckedBoxColor.resolve(this)
+                    .toDisabledColor(CheckboxButtonTokens.DisabledUncheckedBoxOpacity),
         )
     }
 }
@@ -411,32 +430,38 @@ object CheckboxDefaults {
  * material3-shaped [toDisabledColor], which multiplies it, so the writes are spelled out here.
  *
  * One substitution: v1 reads `Colors.secondary`, and this module ports material3's [ColorScheme] with no
- * v1 `Colors` object to read, so the checked thumb comes from `primary`. Callers who want v1's exact
- * ink construct [SwitchColors] directly. v1's four optional `colors(...)` parameters are not ported
- * either, because their defaults would read the theme and a `@Tunable` default cannot — see [Checkbox].
+ * v1 `Colors` object to read, so the checked thumb comes from `primary`. The four colours take `Color?`
+ * rather than upstream's non-null `Color` because a `@Tunable` default expression is hoisted into a
+ * non-`@Tunable` `$default` that cannot read the theme — and two of v1's four defaults are themselves
+ * expressions over another parameter, which the body reproduces (`:312-318`).
  */
 object SwitchDefaults {
     @Tunable
-    fun colors(): SwitchColors = with(MaterialTheme.colorScheme) {
-        val checkedThumb = primary
-        val checkedTrack = checkedThumb.copy(alpha = ColorScheme.DisabledContentAlpha)
-        val uncheckedThumb = onSurface.copy(alpha = UncheckedThumbAlpha)
-        val uncheckedTrack =
-            uncheckedThumb.copy(alpha = uncheckedThumb.alpha * ColorScheme.DisabledContentAlpha)
+    fun colors(
+        checkedThumbColor: Color? = null,
+        checkedTrackColor: Color? = null,
+        uncheckedThumbColor: Color? = null,
+        uncheckedTrackColor: Color? = null,
+    ): SwitchColors = with(MaterialTheme.colorScheme) {
+        val thumb = checkedThumbColor ?: primary
+        val track = checkedTrackColor ?: thumb.copy(alpha = ColorScheme.DisabledContentAlpha)
+        val thumbUnchecked = uncheckedThumbColor ?: onSurface.copy(alpha = UncheckedThumbAlpha)
+        val trackUnchecked = uncheckedTrackColor
+            ?: thumbUnchecked.copy(alpha = thumbUnchecked.alpha * ColorScheme.DisabledContentAlpha)
         SwitchColors(
-            checkedThumbColor = checkedThumb,
-            checkedTrackColor = checkedTrack,
-            uncheckedThumbColor = uncheckedThumb,
-            uncheckedTrackColor = uncheckedTrack,
-            disabledCheckedThumbColor = checkedThumb.copy(alpha = ColorScheme.DisabledContentAlpha),
-            disabledCheckedTrackColor = checkedTrack.copy(
-                alpha = checkedTrack.alpha * ColorScheme.DisabledContentAlpha
+            checkedThumbColor = thumb,
+            checkedTrackColor = track,
+            uncheckedThumbColor = thumbUnchecked,
+            uncheckedTrackColor = trackUnchecked,
+            disabledCheckedThumbColor = thumb.copy(alpha = ColorScheme.DisabledContentAlpha),
+            disabledCheckedTrackColor = track.copy(
+                alpha = track.alpha * ColorScheme.DisabledContentAlpha
             ),
-            disabledUncheckedThumbColor = uncheckedThumb.copy(
-                alpha = uncheckedThumb.alpha * ColorScheme.DisabledContentAlpha
+            disabledUncheckedThumbColor = thumbUnchecked.copy(
+                alpha = thumbUnchecked.alpha * ColorScheme.DisabledContentAlpha
             ),
-            disabledUncheckedTrackColor = uncheckedTrack.copy(
-                alpha = uncheckedThumb.alpha * ColorScheme.DisabledContentAlpha
+            disabledUncheckedTrackColor = trackUnchecked.copy(
+                alpha = thumbUnchecked.alpha * ColorScheme.DisabledContentAlpha
             ),
         )
     }
@@ -450,31 +475,41 @@ object SwitchDefaults {
  * `RadioButton.kt:320`; [RadioButton] reads this one.
  *
  * v1's `colors(...)` (`ToggleControl.kt:354-382`) takes four optional colours and gives the ring and the dot
- * the same value in all four states — `selectedDotColor` defaults to `Colors.secondary` and
- * `unselectedDotColor` to the same `contentColorFor(primary @ 0.5 alpha composited over surface)` as the ring
- * (`:355-380`) — so the two roles split here only where a caller supplies [BareRadioButtonColors] directly.
- * The same missing-`Colors` substitution as at [CheckboxDefaults] applies; the disabled roles come from the
- * row's own tokens instead of v1's `toDisabledColor`, which is why the unselected pair is no longer the
- * selected pair's disabled value.
+ * the same value in all four states by default — `selectedDotColor` repeats the ring's `Colors.secondary`
+ * and `unselectedDotColor` the same `contentColorFor(primary @ 0.5 alpha composited over surface)`
+ * (`:355-380`) — so the two roles split here only where the caller names them. The same missing-`Colors` and
+ * missing-`surface` substitution as at [CheckboxDefaults] applies, and the four take `Color?` for the reason
+ * recorded there; where v1's default is a repeat of the ring's, the body reads the resolved ring.
  */
 object BareRadioButtonDefaults {
     @Tunable
-    fun colors(): BareRadioButtonColors = with(MaterialTheme.colorScheme) {
-        val selected = RadioButtonTokens.SelectedControlColor.resolve(this)
-        val unselected = RadioButtonTokens.UnselectedControlColor.resolve(this)
-        val disabledSelected = RadioButtonTokens.DisabledSelectedControlColor.resolve(this)
-            .toDisabledColor(RadioButtonTokens.DisabledSelectedControlOpacity)
-        val disabledUnselected = RadioButtonTokens.DisabledUnselectedControlColor.resolve(this)
-            .toDisabledColor(RadioButtonTokens.DisabledUnselectedControlOpacity)
+    fun colors(
+        selectedRingColor: Color? = null,
+        selectedDotColor: Color? = null,
+        unselectedRingColor: Color? = null,
+        unselectedDotColor: Color? = null,
+    ): BareRadioButtonColors = with(MaterialTheme.colorScheme) {
+        val ring = selectedRingColor ?: RadioButtonTokens.SelectedControlColor.resolve(this)
+        val dot = selectedDotColor ?: ring
+        val ringUnselected = unselectedRingColor ?: RadioButtonTokens.UnselectedControlColor.resolve(this)
+        val dotUnselected = unselectedDotColor ?: ringUnselected
         BareRadioButtonColors(
-            selectedRingColor = selected,
-            selectedDotColor = selected,
-            unselectedRingColor = unselected,
-            unselectedDotColor = unselected,
-            disabledSelectedRingColor = disabledSelected,
-            disabledSelectedDotColor = disabledSelected,
-            disabledUnselectedRingColor = disabledUnselected,
-            disabledUnselectedDotColor = disabledUnselected,
+            selectedRingColor = ring,
+            selectedDotColor = dot,
+            unselectedRingColor = ringUnselected,
+            unselectedDotColor = dotUnselected,
+            disabledSelectedRingColor = selectedRingColor?.copy(alpha = ColorScheme.DisabledContentAlpha)
+                ?: RadioButtonTokens.DisabledSelectedControlColor.resolve(this)
+                    .toDisabledColor(RadioButtonTokens.DisabledSelectedControlOpacity),
+            disabledSelectedDotColor = selectedDotColor?.copy(alpha = ColorScheme.DisabledContentAlpha)
+                ?: RadioButtonTokens.DisabledSelectedControlColor.resolve(this)
+                    .toDisabledColor(RadioButtonTokens.DisabledSelectedControlOpacity),
+            disabledUnselectedRingColor = unselectedRingColor?.copy(alpha = ColorScheme.DisabledContentAlpha)
+                ?: RadioButtonTokens.DisabledUnselectedControlColor.resolve(this)
+                    .toDisabledColor(RadioButtonTokens.DisabledUnselectedControlOpacity),
+            disabledUnselectedDotColor = unselectedDotColor?.copy(alpha = ColorScheme.DisabledContentAlpha)
+                ?: RadioButtonTokens.DisabledUnselectedControlColor.resolve(this)
+                    .toDisabledColor(RadioButtonTokens.DisabledUnselectedControlOpacity),
         )
     }
 }
